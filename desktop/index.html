@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>TangledLink</title>
+  <link rel="stylesheet" href="/ui/style.css">
+</head>
+<body>
+  <main>
+    <header>
+      <span class="mark" aria-hidden="true">T</span>
+      <h1>TangledLink</h1>
+      <button id="quit-app" type="button" class="secondary" hidden>Выйти из приложения</button>
+    </header>
+
+    <section class="connection" aria-label="Подключение">
+      <div>
+        <p class="status" id="status" aria-live="polite">VPN отключён</p>
+        <p class="caption" id="active-name">Выбери сервер для подключения</p>
+      </div>
+      <div class="connection-actions">
+        <button id="switch-server" class="primary" hidden>Переключить</button>
+        <button id="toggle" class="primary" disabled>Подключить</button>
+      </div>
+    </section>
+
+    <section id="subscription-stats" class="subscription-stats" aria-label="Подписка" hidden>
+      <p id="subscription-state"></p>
+      <p id="subscription-usage"></p>
+      <p id="subscription-expiry"></p>
+    </section>
+
+    <section aria-labelledby="servers-heading">
+      <h2 id="servers-heading">Серверы</h2>
+      <div id="server-tools" class="field-row server-tools" hidden>
+        <input id="server-search" type="search" placeholder="Поиск сервера" aria-label="Поиск сервера">
+        <button id="measure-latency" class="secondary" type="button" title="Проверка прямого TCP-подключения к адресу сервера">Задержка TCP</button>
+        <button id="sort-latency" class="secondary" type="button" aria-pressed="false" hidden>По задержке</button>
+      </div>
+      <div id="servers" class="servers">
+        <p class="empty">Загрузи подписку, чтобы увидеть серверы</p>
+      </div>
+    </section>
+
+    <details id="account" class="account">
+      <summary id="account-title">Войти в аккаунт</summary>
+      <form id="login">
+        <label for="account-id">Логин</label>
+        <input id="account-id" autocomplete="username" required>
+        <label for="account-password">Пароль</label>
+        <input id="account-password" type="password" autocomplete="current-password" required>
+        <div id="challenge" hidden>
+          <label for="account-code">Код из письма</label>
+          <input id="account-code" inputmode="numeric" autocomplete="one-time-code">
+        </div>
+        <button class="secondary" id="login-submit">Войти</button>
+      </form>
+      <div id="signed-in" hidden>
+        <button class="secondary" id="account-refresh">Обновить серверы</button>
+        <button class="secondary" id="account-logout">Выйти</button>
+        <p class="caption" id="account-notice"></p>
+      </div>
+    </details>
+
+    <form id="subscription">
+      <label for="link">Ссылка подписки</label>
+      <div class="field-row">
+        <input id="link" type="password" placeholder="https://…" required spellcheck="false" autocomplete="off" aria-describedby="message">
+        <button id="load" type="submit" class="secondary">Загрузить</button>
+      </div>
+      <div class="subscription-actions">
+        <button id="forget" type="button" class="secondary" hidden>Удалить подписку</button>
+      </div>
+    </form>
+    <p id="message" class="message" role="status"></p>
+  </main>
+  <script type="module" src="/ui/main.ts"></script>
+</body>
+</html>

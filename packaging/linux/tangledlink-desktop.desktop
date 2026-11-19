@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=TangledLink Desktop
+Comment=Connect to TangledLink VPN
+Comment[ru]=Подключение к VPN TangledLink
+Exec=tangledlink-desktop
+Icon=tangledlink-desktop
+Terminal=false
+Categories=Network;
+StartupNotify=true

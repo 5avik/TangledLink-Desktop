@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE policyconfig PUBLIC "-//freedesktop//DTD PolicyKit Policy Configuration 1.0//EN" "https://www.freedesktop.org/standards/PolicyKit/1/policyconfig.dtd">
+<policyconfig>
+  <action id="pro.tngl.desktop.tunnel">
+    <description>Start TangledLink VPN</description>
+    <description xml:lang="ru">Запустить VPN TangledLink</description>
+    <message>Administrator authentication is required to configure the TangledLink tunnel.</message>
+    <message xml:lang="ru">Для настройки туннеля TangledLink требуется подтверждение администратора.</message>
+    <icon_name>tangledlink-desktop</icon_name>
+    <defaults>
+      <allow_any>no</allow_any>
+      <allow_inactive>no</allow_inactive>
+      <allow_active>auth_admin_keep</allow_active>
+    </defaults>
+    <annotate key="org.freedesktop.policykit.exec.path">/usr/lib/tangledlink-desktop/tangledlink-tun-helper</annotate>
+  </action>
+</policyconfig>

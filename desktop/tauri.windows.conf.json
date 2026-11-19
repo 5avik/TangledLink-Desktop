@@ -1,0 +1,20 @@
+{
+  "mainBinaryName": "TangledLink",
+  "bundle": {
+    "active": true,
+    "targets": ["nsis"],
+    "publisher": "TangledLink",
+    "resources": {
+      "xray/xray.exe": "xray/xray.exe",
+      "xray/wintun.dll": "xray/wintun.dll",
+      "xray/LICENSE": "xray/LICENSE",
+      "xray/LICENSE-Wintun": "xray/LICENSE-Wintun"
+    },
+    "windows": {
+      "nsis": {
+        "installMode": "perMachine",
+        "installerHooks": "installer-hooks.nsh"
+      }
+    }
+  }
+}

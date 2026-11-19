@@ -1,0 +1,10 @@
+Package: tangledlink-desktop
+Version: 0.1.0-1
+Architecture: amd64
+Maintainer: TangledLink
+Section: net
+Priority: optional
+Depends: libc6 (>= 2.36), libgtk-3-0, libwebkit2gtk-4.1-0, libayatana-appindicator3-1, pkexec, iproute2, libsecret-tools
+Recommends: systemd-resolved
+Description: TangledLink desktop VPN client
+ Provides the TangledLink graphical client and a Polkit-authorized Xray TUN helper.

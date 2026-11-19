@@ -1,0 +1,8 @@
+/target/
+/local/
+/desktop/target/
+/desktop/dist/
+/desktop/node_modules/
+
+/desktop/xray/
+/desktop/gen/
