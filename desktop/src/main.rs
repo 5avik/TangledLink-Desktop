@@ -252,10 +252,7 @@ fn connect_client(client: &mut Client, index: usize) -> Result<Snapshot, String>
         let target = profile.clone();
         #[cfg(windows)]
         let start = {
-            let core = std::env::current_exe()
-                .map_err(|_| "Не удалось определить папку приложения")?
-                .with_file_name("xray")
-                .join("xray.exe");
+            let core = windows_core_path()?;
             if !core.is_file() {
                 return Err("Не найден Xray рядом с приложением".into());
             }
@@ -950,6 +947,64 @@ fn show_window(app: &AppHandle) -> tauri::Result<()> {
     Ok(())
 }
 
+#[cfg(windows)]
+fn windows_core_path() -> Result<std::path::PathBuf, &'static str> {
+    Ok(std::env::current_exe()
+        .map_err(|_| "Не удалось определить папку приложения")?
+        .with_file_name("xray")
+        .join("xray.exe"))
+}
+
+#[derive(serde::Serialize)]
+struct AppVersions {
+    app: String,
+    xray: Option<String>,
+}
+
+#[tauri::command]
+async fn app_versions(app: AppHandle) -> AppVersions {
+    let version = app.package_info().version.to_string();
+    let xray = tauri::async_runtime::spawn_blocking(xray_version)
+        .await
+        .ok()
+        .flatten();
+    AppVersions { app: version, xray }
+}
+
+fn xray_version() -> Option<String> {
+    #[cfg(not(any(windows, target_os = "linux")))]
+    return None;
+    #[cfg(any(windows, target_os = "linux"))]
+    {
+        use std::process::{Command, Stdio};
+        #[cfg(windows)]
+        let path = windows_core_path().ok()?;
+        #[cfg(target_os = "linux")]
+        let path = tangledlink_desktop::linux::CORE;
+        let mut command = Command::new(path);
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            command.creation_flags(0x08000000); // CREATE_NO_WINDOW
+        }
+        let result = command
+            .arg("version")
+            .stdin(Stdio::null())
+            .stderr(Stdio::null())
+            .output()
+            .ok()?;
+        if !result.status.success() {
+            return None;
+        }
+        let stdout = String::from_utf8_lossy(&result.stdout);
+        let mut header = stdout.lines().next()?.split_whitespace();
+        if header.next()? != "Xray" {
+            return None;
+        }
+        Some(header.next()?.to_owned())
+    }
+}
+
 #[tauri::command]
 async fn check_for_update() -> Result<serde_json::Value, String> {
     #[cfg(target_os = "linux")]
@@ -1054,6 +1109,7 @@ fn main() {
             update_geofiles,
             reset_geofiles,
             launch_split_app,
+            app_versions,
             check_for_update,
             install_update
         ])

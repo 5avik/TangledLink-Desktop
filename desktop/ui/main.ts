@@ -438,6 +438,23 @@ async function refresh() {
 
 quitApp.addEventListener("click", () => { void invoke("quit"); });
 
+const appVersion = document.querySelector("#app-version")!;
+const xrayVersion = document.querySelector("#xray-version")!;
+let versions: { app: string; xray: string | null } | undefined;
+
+function renderVersions() {
+  if (!versions) return;
+  appVersion.textContent = versions.app;
+  xrayVersion.textContent = versions.xray ?? t("Недоступно");
+}
+
+void invoke<typeof versions>("app_versions").then(result => {
+  versions = result;
+  renderVersions();
+}).catch(() => {
+  appVersion.textContent = xrayVersion.textContent = "—";
+});
+
 void refresh();
 window.setInterval(() => { void refresh(); }, 1500);
 window.setInterval(() => {
@@ -445,6 +462,7 @@ window.setInterval(() => {
 }, 1000);
 
 document.addEventListener("language-changed", () => {
+  renderVersions();
   renderServers();
   renderControls();
   if (current.warning) message.textContent = t(current.warning);

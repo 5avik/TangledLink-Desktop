@@ -1,4 +1,7 @@
 export const english: Record<string, string> = {
+  "Версия приложения": "App version",
+  "Версия ядра Xray": "Xray core version",
+  "Недоступно": "Unavailable",
   "Проверить обновления": "Check for updates",
   "Доступно обновление": "Update available",
   "Ход обновления": "Update progress",
