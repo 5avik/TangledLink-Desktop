@@ -1,0 +1,5 @@
+#!/bin/sh
+set -eu
+[ "$#" -eq 1 ] && [ "$(/usr/bin/id -u)" -eq 0 ] || exit 1
+cd /
+exec /usr/bin/env -i PATH=/usr/sbin:/usr/bin:/sbin:/bin HOME=/root /usr/bin/tangledlink-desktop --install-update "$1"

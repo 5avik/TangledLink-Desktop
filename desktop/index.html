@@ -14,67 +14,208 @@
       <button id="quit-app" type="button" class="secondary" hidden>Выйти из приложения</button>
     </header>
 
-    <section class="connection" aria-label="Подключение">
-      <div>
-        <p class="status" id="status" aria-live="polite">VPN отключён</p>
-        <p class="caption" id="active-name">Выбери сервер для подключения</p>
-      </div>
-      <div class="connection-actions">
-        <button id="switch-server" class="primary" hidden>Переключить</button>
-        <button id="toggle" class="primary" disabled>Подключить</button>
-      </div>
-    </section>
-
-    <section id="subscription-stats" class="subscription-stats" aria-label="Подписка" hidden>
-      <p id="subscription-state"></p>
-      <p id="subscription-usage"></p>
-      <p id="subscription-expiry"></p>
-    </section>
-
-    <section aria-labelledby="servers-heading">
-      <h2 id="servers-heading">Серверы</h2>
-      <div id="server-tools" class="field-row server-tools" hidden>
-        <input id="server-search" type="search" placeholder="Поиск сервера" aria-label="Поиск сервера">
-        <button id="measure-latency" class="secondary" type="button" title="Проверка прямого TCP-подключения к адресу сервера">Задержка TCP</button>
-        <button id="sort-latency" class="secondary" type="button" aria-pressed="false" hidden>По задержке</button>
-      </div>
-      <div id="servers" class="servers">
-        <p class="empty">Загрузи подписку, чтобы увидеть серверы</p>
-      </div>
-    </section>
-
-    <details id="account" class="account">
-      <summary id="account-title">Войти в аккаунт</summary>
+    <p id="startup" class="caption" role="status">Проверяем сохранённую сессию…</p>
+    <section id="sign-in" class="account sign-in" aria-labelledby="sign-in-title" hidden>
+      <h2 id="sign-in-title">Вход в аккаунт</h2>
       <form id="login">
+        <p id="registration-rules" class="caption" hidden>Логин: 3–32 символа, строчные латинские буквы, цифры, _ или дефис. Пароль: 12–128 символов.</p>
         <label for="account-id">Логин</label>
         <input id="account-id" autocomplete="username" required>
         <label for="account-password">Пароль</label>
         <input id="account-password" type="password" autocomplete="current-password" required>
+        <div id="registration-email" hidden>
+          <label for="account-email">Электронная почта</label>
+          <input id="account-email" type="email" autocomplete="email">
+        </div>
         <div id="challenge" hidden>
           <label for="account-code">Код из письма</label>
-          <input id="account-code" inputmode="numeric" autocomplete="one-time-code">
+          <input id="account-code" inputmode="numeric" autocomplete="one-time-code" maxlength="6" pattern="[0-9]{6}">
+          <button id="auth-resend" type="button" class="secondary">Отправить код ещё раз</button>
         </div>
-        <button class="secondary" id="login-submit">Войти</button>
+        <button class="primary" id="login-submit" disabled>Войти</button>
       </form>
-      <div id="signed-in" hidden>
-        <button class="secondary" id="account-refresh">Обновить серверы</button>
-        <button class="secondary" id="account-logout">Выйти</button>
-        <p class="caption" id="account-notice"></p>
+      <form id="recover" hidden>
+        <fieldset id="recovery-start">
+          <label for="recovery-id">Логин</label>
+          <input id="recovery-id" autocomplete="username" required>
+        </fieldset>
+        <fieldset id="recovery-activation" hidden>
+          <p class="caption">Введи код активации VPN-логина и почту, которую хочешь подтвердить.</p>
+          <label for="recovery-invite">Код активации</label>
+          <input id="recovery-invite" type="password" autocomplete="off" required>
+          <label for="recovery-email">Электронная почта</label>
+          <input id="recovery-email" type="email" autocomplete="email" required>
+        </fieldset>
+        <fieldset id="recovery-verification" hidden>
+          <p class="caption">Код действует 10 минут.</p>
+          <label for="recovery-code">Код из письма</label>
+          <input id="recovery-code" inputmode="numeric" autocomplete="one-time-code" maxlength="6" pattern="[0-9]{6}" required>
+          <label for="recovery-password">Новый пароль (12–128 символов)</label>
+          <input id="recovery-password" type="password" autocomplete="new-password" required>
+          <label for="recovery-confirm">Повтори новый пароль</label>
+          <input id="recovery-confirm" type="password" autocomplete="new-password" required>
+          <button id="recovery-resend" type="button" class="secondary">Отправить код ещё раз</button>
+        </fieldset>
+        <p id="recovery-support" class="caption" hidden>Для проверки владения аккаунтом напиши в поддержку TangledLink на tangledlink@gmail.com.</p>
+        <p id="recovery-done" class="caption" hidden>Войди с новым паролем.</p>
+        <div class="save-action">
+          <button id="recovery-submit" class="primary">Продолжить</button>
+          <span id="recovery-saved" class="save-status" role="status"></span>
+        </div>
+      </form>
+      <div id="auth-nav">
+        <button id="open-register" type="button" class="secondary">Создать аккаунт</button>
+        <button id="open-recovery" type="button" class="secondary">Забыл пароль</button>
+        <button id="back-login" type="button" class="secondary" hidden>Назад ко входу</button>
       </div>
-    </details>
+    </section>
 
-    <form id="subscription">
-      <label for="link">Ссылка подписки</label>
-      <div class="field-row">
-        <input id="link" type="password" placeholder="https://…" required spellcheck="false" autocomplete="off" aria-describedby="message">
-        <button id="load" type="submit" class="secondary">Загрузить</button>
+    <div id="dashboard" hidden>
+      <section class="connection" aria-label="Подключение">
+        <div>
+          <p class="status" id="status" aria-live="polite">VPN отключён</p>
+          <p class="caption" id="active-name">Выбери сервер для подключения</p>
+        </div>
+        <div class="connection-actions">
+          <button id="switch-server" class="primary" hidden>Переключить</button>
+          <button id="toggle" class="primary" disabled>Подключить</button>
+        </div>
+      </section>
+
+      <section id="subscription-stats" class="subscription-stats" aria-label="Подписка" hidden>
+        <p id="subscription-state"></p>
+        <p id="subscription-usage"></p>
+        <p id="subscription-expiry"></p>
+      </section>
+
+      <section aria-labelledby="servers-heading">
+        <h2 id="servers-heading">Серверы</h2>
+        <div id="server-tools" class="field-row server-tools" hidden>
+          <input id="server-search" type="search" placeholder="Поиск сервера" aria-label="Поиск сервера">
+          <button id="measure-latency" class="secondary" type="button" title="Проверка прямого TCP-подключения к адресу сервера">Задержка TCP</button>
+          <button id="sort-latency" class="secondary" type="button" aria-pressed="false" hidden>По задержке</button>
+        </div>
+        <div id="servers" class="servers">
+          <p class="empty">Нет доступных серверов</p>
+        </div>
+      </section>
+
+      <details id="account" class="account">
+        <summary id="account-title">Войти в аккаунт</summary>
+        <div id="signed-in">
+          <button class="secondary" id="account-refresh">Обновить серверы</button>
+          <button class="secondary" id="account-logout">Выйти</button>
+          <p class="caption" id="account-notice"></p>
+          <details class="account">
+            <summary>Управление аккаунтом · сменить пароль</summary>
+            <form id="change-password">
+              <label>Текущий пароль<input name="current" type="password" autocomplete="current-password" required></label>
+              <label>Новый пароль<input name="new" type="password" autocomplete="new-password" minlength="12" maxlength="128" required></label>
+              <label>Повтори новый пароль<input name="confirm" type="password" autocomplete="new-password" required></label>
+              <div class="save-action">
+                <button class="secondary">Сменить пароль</button>
+                <span id="password-saved" class="save-status" role="status"></span>
+              </div>
+              <p role="status"></p>
+            </form>
+          </details>
+        </div>
+      </details>
+
+    </div>
+    <details class="account" id="preferences">
+      <summary>Настройки</summary>
+      <label for="language">Язык</label>
+      <select id="language"><option value="ru">Русский</option><option value="en">English</option></select>
+      <label for="appearance">Оформление</label>
+      <select id="appearance">
+        <option value="dark">Тёмное</option>
+        <option value="light">Светлое</option>
+        <option value="system">Как в системе</option>
+      </select>
+      <label class="checkbox-setting"><input id="close-to-tray" type="checkbox"> При закрытии окна оставлять VPN работать в трее</label>
+      <p class="caption">Если выключено, закрытие окна завершит приложение и отключит VPN.</p>
+      <div id="linux-vpn-settings" hidden>
+        <div class="update-check">
+          <button id="check-update" type="button" class="secondary">Проверить обновления</button>
+          <span id="check-update-status" role="status"></span>
+        </div>
+        <details class="account">
+          <summary>Маршрутизация, ядро и режим подключения</summary>
+          <label for="connection-mode">Режим подключения</label>
+          <select id="connection-mode"><option value="tun">Системный VPN (TUN)</option><option value="split">Раздельное туннелирование приложений (TUN)</option><option value="proxy">SOCKS5 для отдельных приложений</option></select>
+          <p class="caption">В режиме SOCKS5 укажи прокси 127.0.0.1:10808 в каждом приложении, которое должно ходить через TangledLink.</p>
+          <label for="direct-domains">Домены напрямую (по одному на строку)</label>
+          <textarea id="direct-domains" rows="3" spellcheck="false" placeholder="example.org"></textarea>
+          <label for="direct-ips">IP и сети напрямую (по одной на строку)</label>
+          <textarea id="direct-ips" rows="3" spellcheck="false" placeholder="192.0.2.0/24"></textarea>
+          <p class="caption">Указывай группы geosite: в списке доменов и geoip: в списке сетей. Набор групп зависит от источника.</p>
+          <label class="checkbox-setting"><input id="vpn-ipv6" type="checkbox"> IPv6 в туннеле</label>
+          <p class="caption">Действует в режимах TUN после переподключения. Если выключено, IPv6-трафик идёт по обычным маршрутам системы.</p>
+          <label for="vpn-dns">DNS ядра</label>
+          <select id="vpn-dns"><option value="cloudflare">Cloudflare</option><option value="google">Google</option></select>
+          <label for="mux-concurrency">Потоки TCP-мультиплексирования</label>
+          <input id="mux-concurrency" type="number" min="1" max="128" required>
+          <label class="checkbox-setting"><input id="vpn-fragment" type="checkbox"> Фрагментация TLS ClientHello (TCP)</label>
+          <div class="save-action">
+            <button id="save-core-options" type="button" class="secondary">Сохранить параметры</button>
+            <span id="core-saved" class="save-status" role="status"></span>
+          </div>
+          <p class="caption">Параметры применятся при следующем подключении.</p>
+        </details>
+        <details class="account" id="geofiles">
+          <summary>Геофайлы</summary>
+          <label for="geo-source">Источник обновлений</label>
+          <select id="geo-source">
+            <option value="0">Loyalsoldier</option>
+            <option value="1">Runet Freedom</option>
+            <option value="2">Chocolate4U</option>
+          </select>
+          <dl>
+            <dt>geoip.dat</dt><dd id="geoip-info"></dd>
+            <dt>geosite.dat</dt><dd id="geosite-info"></dd>
+          </dl>
+          <p id="geofiles-origin" class="caption"></p>
+          <div class="geo-actions">
+            <button id="geo-update" type="button" class="secondary">Обновить геофайлы</button>
+            <button id="geo-reset" type="button" class="secondary">Вернуть файлы из пакета</button>
+          </div>
+          <p id="geofiles-message" role="status"></p>
+        </details>
+        <details class="account" id="split-apps">
+          <summary>Раздельное туннелирование приложений</summary>
+          <p class="caption">Выбери раздельный TUN в режиме подключения, сохрани параметры и переподключи VPN. Запускай нужные программы из этого списка. Если программа уже открыта, сначала закрой её полностью.</p>
+          <p class="caption">Через VPN идёт TCP и UDP запущенных здесь программ. Остальной трафик и запросы через системный DNS-резолвер идут обычным маршрутом. При отключении VPN программы продолжат работать через обычное подключение.</p>
+          <label for="split-program">Путь к исполняемому файлу</label>
+          <div class="split-program-entry">
+            <input id="split-program" type="text" placeholder="/usr/bin/firefox" spellcheck="false">
+            <button id="split-add" type="button" class="secondary">Добавить</button>
+          </div>
+          <ul id="split-programs"></ul>
+          <p id="split-message" role="status"></p>
+        </details>
+        <label for="vpn-mtu">VPN · MTU (1280–1500)</label>
+        <input id="vpn-mtu" type="number" min="1280" max="1500" step="1">
+        <label class="checkbox-setting"><input id="local-direct" type="checkbox"> Частные IP-адреса напрямую</label>
+        <label class="checkbox-setting"><input id="vpn-mux" type="checkbox"> Мультиплексирование TCP</label>
+        <p class="caption">Мультиплексирование применяется к TCP-профилям без Vision. Изменения вступят в силу при следующем подключении.</p>
       </div>
-      <div class="subscription-actions">
-        <button id="forget" type="button" class="secondary" hidden>Удалить подписку</button>
-      </div>
-    </form>
+      <p id="preferences-message" role="status"></p>
+    </details>
     <p id="message" class="message" role="status"></p>
   </main>
+  <dialog id="update-dialog" aria-labelledby="update-title">
+    <h2 id="update-title">Доступно обновление</h2>
+    <p id="update-version"></p>
+    <div id="update-notes"></div>
+    <label for="update-progress" class="visually-hidden">Ход обновления</label>
+    <progress id="update-progress" max="100" hidden></progress>
+    <p id="update-status" role="status"></p>
+    <div class="save-action">
+      <button id="update-install" type="button" class="primary">Скачать и установить</button>
+      <button id="update-later" type="button" class="secondary" autofocus>Позже</button>
+    </div>
+  </dialog>
   <script type="module" src="/ui/main.ts"></script>
 </body>
 </html>

@@ -3602,10 +3602,13 @@ dependencies = [
 
 [[package]]
 name = "tangledlink-app"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
+ "libc",
+ "semver",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
  "tangledlink-desktop",
  "tauri",
  "tauri-build",
@@ -3618,12 +3621,13 @@ dependencies = [
 
 [[package]]
 name = "tangledlink-desktop"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "base64 0.22.1",
  "ctrlc",
  "libc",
  "percent-encoding",
+ "serde",
  "serde_json",
  "url",
  "windows-sys 0.61.2",

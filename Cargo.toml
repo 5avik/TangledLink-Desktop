@@ -1,12 +1,13 @@
 [package]
 name = "tangledlink-desktop"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 publish = false
 default-run = "tangledlink-desktop"
 
 [dependencies]
 serde_json = "1"
+serde = { version = "1", features = ["derive"] }
 base64 = "0.22"
 percent-encoding = "2"
 url = "2"

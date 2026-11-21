@@ -1,16 +1,19 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod account;
+#[cfg(target_os = "linux")]
+mod geofiles;
 mod latency;
 mod settings;
+#[cfg(target_os = "linux")]
+mod updater;
 
-use settings::Settings;
-use std::{sync::Mutex, time::Duration};
+use std::sync::Mutex;
 use tangledlink_desktop::{Profile, subscription_profiles};
 use tauri::{
     AppHandle, Manager, RunEvent, State, WebviewUrl, WebviewWindowBuilder, WindowEvent,
     image::Image,
-    menu::{MenuBuilder, MenuItemBuilder},
+    menu::{MenuBuilder, MenuItem, MenuItemBuilder},
     tray::TrayIconBuilder,
 };
 
@@ -21,10 +24,18 @@ use tangledlink_desktop::linux::Tunnel;
 
 #[derive(Default)]
 struct Client {
-    profiles: Vec<Profile>,
+    #[cfg(target_os = "linux")]
+    mtu: Option<u16>,
+    #[cfg(target_os = "linux")]
+    installing_update: bool,
+    #[cfg(target_os = "linux")]
+    geo_bundle: Option<std::path::PathBuf>,
+    #[cfg(target_os = "linux")]
+    routing: (bool, bool),
+    #[cfg(target_os = "linux")]
+    core_options: tangledlink_desktop::linux::Options,
     account: Option<Account>,
-    saved: Option<Settings>,
-    manual_persisted: bool,
+    tray_warning: Option<String>,
     warning: Option<String>,
     #[cfg(any(windows, target_os = "linux"))]
     tunnel: Option<Tunnel>,
@@ -35,6 +46,7 @@ struct Account {
     id: String,
     session: account::Session,
     persisted: bool,
+    restoring: bool,
     profiles: Vec<Profile>,
     selected: usize,
     notice: Option<String>,
@@ -54,6 +66,7 @@ struct Server {
 struct Snapshot {
     servers: Vec<Server>,
     can_quit: bool,
+    checking_session: bool,
     account: Option<String>,
     account_notice: Option<String>,
     subscribed: Option<bool>,
@@ -67,10 +80,21 @@ impl Client {
     fn profiles(&self) -> &[Profile] {
         self.account
             .as_ref()
-            .map_or(&self.profiles, |account| &account.profiles)
+            .map_or(&[], |account| account.profiles.as_slice())
     }
 
     fn snapshot(&mut self) -> Result<Snapshot, String> {
+        if self
+            .account
+            .as_ref()
+            .is_some_and(|account| account.session.expired())
+        {
+            self.account = None;
+            self.tray_warning = None;
+            let stop_error = self.disconnect().err();
+            self.warning =
+                Some(stop_error.unwrap_or_else(|| "Сессия истекла. Войди снова.".into()));
+        }
         #[cfg(any(windows, target_os = "linux"))]
         if let Some(tunnel) = &mut self.tunnel
             && !tunnel.running()?
@@ -80,6 +104,10 @@ impl Client {
         }
         Ok(Snapshot {
             can_quit: cfg!(target_os = "linux"),
+            checking_session: self
+                .account
+                .as_ref()
+                .is_some_and(|account| account.restoring),
             servers: self
                 .profiles()
                 .iter()
@@ -89,21 +117,15 @@ impl Client {
                 })
                 .collect(),
             active: self.active,
-            selected: self.account.as_ref().map_or_else(
-                || self.saved.as_ref().map_or(0, |saved| saved.selected),
-                |account| account.selected,
-            ),
+            selected: self.account.as_ref().map_or(0, |account| account.selected),
             account: self.account.as_ref().map(|account| account.id.clone()),
             subscribed: self.account.as_ref().and_then(|account| account.subscribed),
-            usage: match &self.account {
-                Some(account) => account.usage,
-                None => self.saved.as_ref().and_then(|saved| saved.usage),
-            },
+            usage: self.account.as_ref().and_then(|account| account.usage),
             account_notice: self
                 .account
                 .as_ref()
                 .and_then(|account| account.notice.clone()),
-            warning: self.warning.clone(),
+            warning: self.tray_warning.clone().or_else(|| self.warning.clone()),
         })
     }
 
@@ -124,197 +146,18 @@ fn lock(shared: &Shared) -> Result<std::sync::MutexGuard<'_, Client>, String> {
 }
 
 #[tauri::command]
-async fn load_subscription(app: AppHandle, link: String) -> Result<Snapshot, String> {
-    tauri::async_runtime::spawn_blocking(move || {
-        let link = match link.trim() {
-            "" => {
-                let shared = app.state::<Shared>();
-                lock(&shared)?
-                    .saved
-                    .as_ref()
-                    .map(|saved| saved.link.clone())
-                    .ok_or("Введите ссылку подписки HTTPS")?
-            }
-            link => link.to_owned(),
-        };
-        let uri = url::Url::parse(&link).map_err(|_| "Введите ссылку подписки HTTPS")?;
-        if uri.scheme() != "https"
-            || uri.host_str().is_none()
-            || !uri.username().is_empty()
-            || uri.password().is_some()
-            || uri.fragment().is_some()
-        {
-            return Err("Введите ссылку подписки HTTPS".into());
-        }
-        let config = ureq::Agent::config_builder()
-            .timeout_global(Some(Duration::from_secs(15)))
-            .max_redirects(0)
-            .build();
-        let response = ureq::Agent::new_with_config(config)
-            .get(uri.as_str())
-            .call()
-            .map_err(|_| "Не удалось загрузить подписку")?;
-        if !response.status().is_success() {
-            return Err("Сервер подписки вернул ошибку".into());
-        }
-        let usage = response
-            .headers()
-            .get("subscription-userinfo")
-            .and_then(|value| value.to_str().ok())
-            .and_then(account::Usage::from_header);
-        let text = response
-            .into_body()
-            .into_with_config()
-            .limit(512 * 1024)
-            .read_to_string()
-            .map_err(|_| "Не удалось прочитать подписку")?;
-        let profiles = subscription_profiles(&text)
-            .map_err(|_| "В подписке нет поддерживаемых серверов VLESS REALITY")?;
-        let shared = app.state::<Shared>();
-        let mut client = lock(&shared)?;
-        if client.snapshot()?.active.is_some() || client.account.is_some() {
-            return Err("Отключи VPN и выйди из аккаунта перед импортом ссылки".into());
-        }
-        let selected = client
-            .saved
-            .as_ref()
-            .filter(|saved| saved.link == uri.as_str())
-            .and_then(|saved| client.profiles.get(saved.selected))
-            .and_then(|previous| {
-                let mut matching = profiles.iter().enumerate().filter(|(_, profile)| {
-                    profile.name == previous.name && profile.transport == previous.transport
-                });
-                if let Some((index, _)) = matching.next()
-                    && matching.next().is_none()
-                {
-                    return Some(index);
-                }
-                profiles.iter().position(|profile| {
-                    profile.name == previous.name && profile.outbound == previous.outbound
-                })
-            })
-            .unwrap_or(0);
-        let saved = Settings {
-            link: uri.into(),
-            body: text,
-            selected,
-            usage,
-        };
-        let warning = persist(&app, &saved).err();
-        #[cfg(windows)]
-        if let Some(error) = warning.as_ref() {
-            return Err(error.clone());
-        }
-        client.manual_persisted |= warning.is_none();
-        client.saved = Some(saved);
-        client.profiles = profiles;
-        client.warning = warning;
-        client.snapshot()
-    })
-    .await
-    .map_err(|_| "Ошибка загрузки подписки".to_owned())?
-}
-
-#[cfg(any(windows, target_os = "linux"))]
-fn cache_path(app: &AppHandle) -> tauri::Result<std::path::PathBuf> {
-    Ok(app.path().app_local_data_dir()?.join("subscription.bin"))
-}
-
-fn persist(app: &AppHandle, saved: &Settings) -> Result<(), String> {
-    #[cfg(any(windows, target_os = "linux"))]
-    {
-        let path = cache_path(app).map_err(|_| "Папка настроек недоступна")?;
-        settings::write(&path, saved).map_err(|_| "Не удалось сохранить подписку на этом ПК")?;
-    }
-    #[cfg(not(any(windows, target_os = "linux")))]
-    let _ = (app, saved);
-    Ok(())
-}
-
-#[tauri::command]
 fn select_server(app: AppHandle, index: usize) -> Result<Snapshot, String> {
     let shared = app.state::<Shared>();
     let mut client = lock(&shared)?;
-    if index >= client.profiles().len() || client.snapshot()?.active.is_some() {
+    if client.snapshot()?.active.is_some() {
         return Err("Сервер недоступен для выбора".into());
     }
-    remember_server(&app, &mut client, index)?;
+    let account = client.account.as_mut().ok_or("Сначала войди в аккаунт")?;
+    if index >= account.profiles.len() {
+        return Err("Сервер недоступен для выбора".into());
+    }
+    account.selected = index;
     client.snapshot()
-}
-
-fn remember_server(app: &AppHandle, client: &mut Client, index: usize) -> Result<(), String> {
-    if let Some(account) = client.account.as_mut() {
-        account.selected = index;
-        return Ok(());
-    }
-    let saved = client.saved.as_mut().ok_or("Сначала загрузи подписку")?;
-    if saved.selected == index {
-        return Ok(());
-    }
-    let previous = saved.selected;
-    saved.selected = index;
-    if let Err(error) = persist(app, saved) {
-        #[cfg(windows)]
-        {
-            saved.selected = previous;
-            return Err(error);
-        }
-        #[cfg(not(windows))]
-        {
-            let _ = previous;
-            client.warning = Some(error);
-        }
-    } else {
-        client.manual_persisted = true;
-    }
-    Ok(())
-}
-
-#[tauri::command]
-fn forget_subscription(app: AppHandle) -> Result<Snapshot, String> {
-    let shared = app.state::<Shared>();
-    let mut client = lock(&shared)?;
-    if client.snapshot()?.active.is_some() {
-        return Err("Сначала отключи VPN".into());
-    }
-    #[cfg(any(windows, target_os = "linux"))]
-    if client.manual_persisted {
-        let path = cache_path(&app).map_err(|_| "Папка настроек недоступна")?;
-        if let Err(error) = settings::remove(&path)
-            && error.kind() != std::io::ErrorKind::NotFound
-        {
-            return Err("Не удалось удалить подписку".into());
-        }
-    }
-    client.saved = None;
-    client.manual_persisted = false;
-    client.profiles.clear();
-    client.warning = None;
-    client.snapshot()
-}
-
-#[cfg(any(windows, target_os = "linux"))]
-fn restore(app: &AppHandle) -> Option<(Settings, Vec<Profile>)> {
-    let result = (|| {
-        let path = cache_path(app).map_err(|_| ())?;
-        let Some(mut saved) = settings::read::<Settings>(&path).map_err(|_| ())? else {
-            return Ok(None);
-        };
-        let profiles = subscription_profiles(&saved.body).map_err(|_| ())?;
-        if saved.selected >= profiles.len() {
-            saved.selected = 0;
-        }
-        Ok::<_, ()>(Some((saved, profiles)))
-    })();
-    match result {
-        Ok(restored) => restored,
-        Err(()) => {
-            if let Ok(mut client) = lock(&app.state::<Shared>()) {
-                client.warning = Some("Сохранённая подписка недоступна. Загрузи её снова.".into());
-            }
-            None
-        }
-    }
 }
 
 #[tauri::command]
@@ -373,85 +216,105 @@ async fn connect(app: AppHandle, index: usize) -> Result<Snapshot, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let shared = app.state::<Shared>();
         let mut client = lock(&shared)?;
-        if client.snapshot()?.active == Some(index) {
-            return client.snapshot();
-        }
-        if client
-            .account
-            .as_ref()
-            .is_some_and(|account| account.session.expired())
-        {
-            return Err("Сессия истекла. Выйди из аккаунта и войди снова.".into());
-        }
-        let profile = client.profiles().get(index).ok_or("Сервер не найден")?;
-        #[cfg(not(any(windows, target_os = "linux")))]
-        {
-            let _ = profile;
-            Err("В этой сборке туннель доступен на Windows".into())
-        }
-        #[cfg(any(windows, target_os = "linux"))]
-        {
-            let previous = client.active.and_then(|old| {
-                client
-                    .profiles()
-                    .get(old)
-                    .map(|profile| (old, profile.clone()))
-            });
-            let target = profile.clone();
-            #[cfg(windows)]
-            let start = {
-                let core = std::env::current_exe()
-                    .map_err(|_| "Не удалось определить папку приложения")?
-                    .with_file_name("xray")
-                    .join("xray.exe");
-                if !core.is_file() {
-                    return Err("Не найден Xray рядом с приложением".into());
-                }
-                move |profile: Profile| Tunnel::start(&core, profile.outbound)
-            };
-            #[cfg(target_os = "linux")]
-            let start = {
-                if !std::path::Path::new(tangledlink_desktop::linux::HELPER).is_file() {
-                    return Err("Установи системный помощник TangledLink из пакета Linux.".into());
-                }
-                |profile: Profile| Tunnel::start(&profile.source)
-            };
-            client.disconnect()?;
-            match start_or_restore((index, target), previous, start) {
-                SwitchResult::Started {
-                    index,
-                    tunnel,
-                    restored,
-                } => {
-                    client.tunnel = Some(tunnel);
-                    client.active = Some(index);
-                    if restored {
-                        return Err(
-                            "Новый туннель не запустился. Прежнее подключение восстановлено."
-                                .into(),
-                        );
-                    }
-                    if client.snapshot()?.selected != index
-                        && remember_server(&app, &mut client, index).is_err()
-                    {
-                        client.warning =
-                            Some("Сервер подключён. Не удалось сохранить выбор.".into());
-                    }
-                    client.snapshot()
-                }
-                SwitchResult::Failed {
-                    attempted_restore: true,
-                    ..
-                } => Err(
-                    "Не удалось запустить новый туннель или восстановить прежний. VPN отключён."
-                        .into(),
-                ),
-                SwitchResult::Failed { error, .. } => Err(error.into()),
-            }
-        }
+        client.tray_warning = None;
+        connect_client(&mut client, index)
     })
     .await
     .map_err(|_| "Ошибка запуска VPN".to_owned())?
+}
+
+fn connect_client(client: &mut Client, index: usize) -> Result<Snapshot, String> {
+    #[cfg(target_os = "linux")]
+    if client.installing_update {
+        return Err("Идёт установка обновления.".into());
+    }
+    if client.snapshot()?.active == Some(index) {
+        return client.snapshot();
+    }
+    let account = client.account.as_ref().ok_or("Сначала войди в аккаунт")?;
+    if account.session.expired() {
+        return Err("Сессия истекла. Войди снова.".into());
+    }
+    let profile = account.profiles.get(index).ok_or("Сервер не найден")?;
+    #[cfg(not(any(windows, target_os = "linux")))]
+    {
+        let _ = profile;
+        Err("В этой сборке туннель доступен на Windows и Linux".into())
+    }
+    #[cfg(any(windows, target_os = "linux"))]
+    {
+        let previous = client.active.and_then(|old| {
+            client
+                .profiles()
+                .get(old)
+                .map(|profile| (old, profile.clone()))
+        });
+        let target = profile.clone();
+        #[cfg(windows)]
+        let start = {
+            let core = std::env::current_exe()
+                .map_err(|_| "Не удалось определить папку приложения")?
+                .with_file_name("xray")
+                .join("xray.exe");
+            if !core.is_file() {
+                return Err("Не найден Xray рядом с приложением".into());
+            }
+            move |profile: Profile| Tunnel::start(&core, profile.outbound)
+        };
+        #[cfg(target_os = "linux")]
+        let start = {
+            if !client.core_options.proxy_only
+                && !std::path::Path::new(tangledlink_desktop::linux::HELPER).is_file()
+            {
+                return Err("Установи системный помощник TangledLink из пакета Linux.".into());
+            }
+            {
+                let mtu = client.mtu.unwrap_or(1500);
+                let (local, mux) = client.routing;
+                let options = client.core_options.clone();
+                let bundle = client.geo_bundle.clone();
+                move |profile: Profile| {
+                    Tunnel::start(
+                        &profile.source,
+                        mtu,
+                        local,
+                        mux,
+                        &options,
+                        bundle
+                            .as_deref()
+                            .filter(|path| !matches!(path.try_exists(), Ok(false))),
+                    )
+                }
+            }
+        };
+        client.disconnect()?;
+        match start_or_restore((index, target), previous, start) {
+            SwitchResult::Started {
+                index,
+                tunnel,
+                restored,
+            } => {
+                client.tunnel = Some(tunnel);
+                client.active = Some(index);
+                if restored {
+                    return Err(
+                        "Новый туннель не запустился. Прежнее подключение восстановлено.".into(),
+                    );
+                }
+                if let Some(account) = client.account.as_mut() {
+                    account.selected = index;
+                }
+                client.snapshot()
+            }
+            SwitchResult::Failed {
+                attempted_restore: true,
+                ..
+            } => Err(
+                "Не удалось запустить новый туннель или восстановить прежний. VPN отключён.".into(),
+            ),
+            SwitchResult::Failed { error, .. } => Err(error.into()),
+        }
+    }
 }
 
 #[cfg(any(windows, target_os = "linux", test))]
@@ -504,6 +367,7 @@ async fn disconnect(app: AppHandle) -> Result<Snapshot, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let shared = app.state::<Shared>();
         let mut client = lock(&shared)?;
+        client.tray_warning = None;
         client.disconnect()?;
         client.snapshot()
     })
@@ -514,6 +378,7 @@ async fn disconnect(app: AppHandle) -> Result<Snapshot, String> {
 #[derive(serde::Serialize)]
 struct AuthResult {
     email_required: bool,
+    retry_after_seconds: u64,
     snapshot: Option<Snapshot>,
 }
 
@@ -556,6 +421,7 @@ fn restore_session(app: &AppHandle, client: &mut Client) {
                 id: saved.id,
                 session: saved.session,
                 persisted: true,
+                restoring: true,
                 profiles: Vec::new(),
                 selected: 0,
                 notice: Some("Загружаем серверы аккаунта…".into()),
@@ -619,31 +485,49 @@ async fn login_account(
     id: String,
     password: String,
     email_code: Option<String>,
+    registration_email: Option<String>,
 ) -> Result<AuthResult, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let id = id.trim().to_owned();
         if id.is_empty() || password.is_empty() {
             return Err("Введи логин и пароль".into());
         }
+        if registration_email.is_some() {
+            if !(3..=32).contains(&id.len())
+                || !id.bytes().all(|c| {
+                    c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, b'_' | b'-')
+                })
+            {
+                return Err(
+                    "Логин: 3–32 символа, строчные латинские буквы, цифры, _ или дефис".into(),
+                );
+            }
+            validate_new_password(&password)?;
+        }
+        validate_email_code(email_code.as_deref())?;
         let shared = app.state::<Shared>();
         let mut client = lock(&shared)?;
         if client.snapshot()?.active.is_some() || client.account.is_some() {
             return Err("Для входа отключи VPN и выйди из текущего аккаунта".into());
         }
         let agent = account::agent();
-        let Some(session) = account::login(
+        let session = match account::authenticate(
             &agent,
             account::Login {
                 id: &id,
                 password: &password,
+                email: registration_email.as_deref().map(str::trim),
                 email_code: email_code.as_deref(),
             },
-        )?
-        else {
-            return Ok(AuthResult {
-                email_required: true,
-                snapshot: None,
-            });
+        )? {
+            account::Authentication::SignedIn(session) => session,
+            account::Authentication::EmailRequired(retry_after_seconds) => {
+                return Ok(AuthResult {
+                    email_required: true,
+                    retry_after_seconds,
+                    snapshot: None,
+                });
+            }
         };
         let update = account_profiles(&agent, &session).ok_or("Сессия истекла. Войди снова.")?;
         client.warning = None;
@@ -669,6 +553,7 @@ async fn login_account(
             id,
             session,
             persisted,
+            restoring: false,
             profiles: update.profiles,
             selected: 0,
             notice: update.notice,
@@ -677,11 +562,68 @@ async fn login_account(
         });
         Ok(AuthResult {
             email_required: false,
+            retry_after_seconds: 0,
             snapshot: Some(client.snapshot()?),
         })
     })
     .await
     .map_err(|_| "Ошибка входа".to_owned())?
+}
+
+fn validate_new_password(password: &str) -> Result<(), String> {
+    if (12..=128).contains(&password.encode_utf16().count()) {
+        Ok(())
+    } else {
+        Err("Пароль должен содержать от 12 до 128 символов".into())
+    }
+}
+
+fn validate_email_code(code: Option<&str>) -> Result<(), String> {
+    if code.is_some_and(|code| code.len() != 6 || !code.bytes().all(|byte| byte.is_ascii_digit())) {
+        return Err("Введи шесть цифр из письма".into());
+    }
+    Ok(())
+}
+
+#[tauri::command]
+async fn recover_account(
+    app: AppHandle,
+    id: String,
+    email: Option<String>,
+    invite_code: Option<String>,
+    email_code: Option<String>,
+    password: Option<String>,
+) -> Result<account::RecoveryResult, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let id = id.trim();
+        if !(1..=128).contains(&id.len())
+            || !id
+                .bytes()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, b'_' | b'-'))
+        {
+            return Err("Проверь логин".into());
+        }
+        let shared = app.state::<Shared>();
+        if lock(&shared)?.snapshot()?.account.is_some() {
+            return Err("Сначала выйди из аккаунта".into());
+        }
+        validate_email_code(email_code.as_deref())?;
+        if email_code.is_some() {
+            validate_new_password(password.as_deref().unwrap_or_default())?;
+        }
+        account::recover(
+            &account::agent(),
+            account::Recovery {
+                id,
+                email: email.as_deref().map(str::trim),
+                invite_code: invite_code.as_deref().map(str::trim),
+                email_code: email_code.as_deref(),
+                password: password.as_deref(),
+            },
+        )
+    })
+    .await
+    .map_err(|_| "Ошибка восстановления пароля".to_owned())?
 }
 
 #[tauri::command]
@@ -722,6 +664,12 @@ async fn refresh_account(app: AppHandle) -> Result<Snapshot, String> {
             );
             return client.snapshot();
         };
+        if account.restoring && update.subscribed.is_none() {
+            client.account = None;
+            client.warning = Some("Не удалось подтвердить сохранённую сессию. Войди снова.".into());
+            return client.snapshot();
+        }
+        account.restoring = false;
         account.selected = account
             .profiles
             .get(account.selected)
@@ -767,9 +715,225 @@ async fn logout_account(app: AppHandle) -> Result<Snapshot, String> {
     .map_err(|_| "Ошибка выхода".to_owned())?
 }
 
+struct TrayItems([MenuItem<tauri::Wry>; 4]);
+
+#[tauri::command]
+fn set_language(tray: State<'_, TrayItems>, english: bool) -> Result<(), String> {
+    let labels = if english {
+        [
+            "Open TangledLink",
+            "Connect selected server",
+            "Disconnect VPN",
+            "Disconnect VPN and quit",
+        ]
+    } else {
+        [
+            "Открыть TangledLink",
+            "Подключить выбранный сервер",
+            "Отключить VPN",
+            "Отключить VPN и выйти",
+        ]
+    };
+    for (item, label) in tray.0.iter().zip(labels) {
+        item.set_text(label).map_err(|error| error.to_string())?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+async fn launch_split_app(app: AppHandle, program: String) -> Result<(), String> {
+    #[cfg(target_os = "linux")]
+    {
+        return tauri::async_runtime::spawn_blocking(move || {
+            let state = app.state::<Shared>();
+            let mut client = lock(&state)?;
+            if client.snapshot()?.active.is_none()
+                || !client
+                    .tunnel
+                    .as_mut()
+                    .ok_or("Сначала подключи VPN в режиме раздельного туннелирования.")?
+                    .routes_apps()?
+            {
+                return Err("Сначала подключи VPN в режиме раздельного туннелирования.".into());
+            }
+            let mut process =
+                tangledlink_desktop::linux::app_scope(std::path::Path::new(&program))?;
+            drop(client);
+            // systemd-run remains alive alongside the program. Catch immediate launch errors
+            // and let a waiter reap it if the application continues running.
+            std::thread::sleep(std::time::Duration::from_millis(250));
+            match process
+                .try_wait()
+                .map_err(|_| "Не удалось запустить приложение через VPN.")?
+            {
+                Some(status) if !status.success() => {
+                    Err("Не удалось запустить приложение через VPN.".into())
+                }
+                Some(_) => Ok(()),
+                None => {
+                    std::thread::spawn(move || {
+                        let _ = process.wait();
+                    });
+                    Ok(())
+                }
+            }
+        })
+        .await
+        .map_err(|_| "Не удалось запустить приложение через VPN.")?;
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = (app, program);
+        Err("Раздельное туннелирование доступно на Linux.".into())
+    }
+}
+
+#[tauri::command]
+fn geofiles_status(app: AppHandle) -> Result<serde_json::Value, String> {
+    #[cfg(target_os = "linux")]
+    return geofiles::status(&geofiles::bundle_path(&app)?);
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = app;
+        Ok(serde_json::Value::Null)
+    }
+}
+
+#[tauri::command]
+async fn update_geofiles(app: AppHandle, source: usize) -> Result<serde_json::Value, String> {
+    #[cfg(target_os = "linux")]
+    {
+        let path = geofiles::bundle_path(&app)?;
+        return tauri::async_runtime::spawn_blocking(move || geofiles::update(&path, source))
+            .await
+            .map_err(|_| "Не удалось обновить геофайлы")?;
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = (app, source);
+        Ok(serde_json::Value::Null)
+    }
+}
+
+#[tauri::command]
+fn reset_geofiles(app: AppHandle) -> Result<serde_json::Value, String> {
+    #[cfg(target_os = "linux")]
+    return geofiles::reset(&geofiles::bundle_path(&app)?);
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = app;
+        Ok(serde_json::Value::Null)
+    }
+}
+
+#[tauri::command]
+fn set_core_options(state: State<'_, Shared>, options: serde_json::Value) -> Result<(), String> {
+    #[cfg(target_os = "linux")]
+    {
+        let options: tangledlink_desktop::linux::Options =
+            serde_json::from_value(options).map_err(|_| "Некорректные параметры ядра")?;
+        if !options.valid() {
+            return Err("Проверь домены, IP, группы геофайлов и число потоков".into());
+        }
+        lock(&state)?.core_options = options;
+    }
+    #[cfg(not(target_os = "linux"))]
+    let _ = (state, options);
+    Ok(())
+}
+
+#[tauri::command]
+fn set_linux_routing(state: State<'_, Shared>, local: bool, mux: bool) -> Result<(), String> {
+    #[cfg(target_os = "linux")]
+    {
+        lock(&state)?.routing = (local, mux);
+    }
+    #[cfg(not(target_os = "linux"))]
+    let _ = (state, local, mux);
+    Ok(())
+}
+
+#[tauri::command]
+fn set_vpn_mtu(state: State<'_, Shared>, mtu: u16) -> Result<(), String> {
+    if !(1280..=1500).contains(&mtu) {
+        return Err("MTU должен быть от 1280 до 1500".into());
+    }
+    #[cfg(target_os = "linux")]
+    {
+        lock(&state)?.mtu = Some(mtu);
+    }
+    #[cfg(not(target_os = "linux"))]
+    let _ = state;
+    Ok(())
+}
+
+#[tauri::command]
+async fn change_account_password(
+    app: AppHandle,
+    current: String,
+    new_password: String,
+) -> Result<(), String> {
+    validate_new_password(&new_password)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let shared = app.state::<Shared>();
+        let session = lock(&shared)?
+            .account
+            .as_ref()
+            .filter(|account| !account.restoring && !account.session.expired())
+            .ok_or("Войди в аккаунт")?
+            .session
+            .clone();
+        account::change_password(&account::agent(), &session, &current, &new_password)
+    })
+    .await
+    .map_err(|_| "Не удалось изменить пароль".to_owned())?
+}
+
+#[tauri::command]
+fn set_close_to_tray(state: State<'_, std::sync::atomic::AtomicBool>, enabled: bool) {
+    state.store(enabled, std::sync::atomic::Ordering::Relaxed);
+}
+
 #[tauri::command]
 fn quit(app: AppHandle) {
     app.exit(0);
+}
+
+fn tray_connection(app: &AppHandle, enable: bool) {
+    let app = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let error = {
+            let shared = app.state::<Shared>();
+            // Duplicate clicks while a native authorization prompt is open must not queue.
+            let Ok(mut client) = shared.try_lock() else {
+                return;
+            };
+            let result = client.snapshot().and_then(|snapshot| {
+                if enable {
+                    if snapshot.active.is_some() {
+                        return Ok(());
+                    }
+                    if snapshot.account.is_none() || snapshot.checking_session {
+                        return Err("Сначала войди в аккаунт.".into());
+                    }
+                    if snapshot.servers.is_empty() {
+                        return Err("В аккаунте нет доступных серверов.".into());
+                    }
+                    connect_client(&mut client, snapshot.selected).map(|_| ())
+                } else {
+                    client.disconnect()
+                }
+            });
+            client.tray_warning = result.err();
+            client.tray_warning.is_some()
+        };
+        if error {
+            let window_app = app.clone();
+            let _ = app.run_on_main_thread(move || {
+                let _ = show_window(&window_app);
+            });
+        }
+    });
 }
 
 fn show_window(app: &AppHandle) -> tauri::Result<()> {
@@ -786,38 +950,122 @@ fn show_window(app: &AppHandle) -> tauri::Result<()> {
     Ok(())
 }
 
+#[tauri::command]
+async fn check_for_update() -> Result<serde_json::Value, String> {
+    #[cfg(target_os = "linux")]
+    return tauri::async_runtime::spawn_blocking(|| {
+        let update = updater::check()?;
+        serde_json::to_value(update).map_err(|_| "Не удалось проверить обновления.".to_owned())
+    })
+    .await
+    .map_err(|_| "Не удалось проверить обновления.".to_owned())?;
+    #[cfg(not(target_os = "linux"))]
+    Ok(serde_json::Value::Null)
+}
+
+#[cfg(target_os = "linux")]
+#[derive(Default)]
+struct UpdateLock(Mutex<()>);
+
+#[tauri::command]
+async fn install_update(app: AppHandle, version: String) -> Result<(), String> {
+    #[cfg(target_os = "linux")]
+    {
+        use tauri::Emitter;
+        return tauri::async_runtime::spawn_blocking(move || {
+            let update_lock = app.state::<UpdateLock>();
+            let _guard = update_lock
+                .0
+                .try_lock()
+                .map_err(|_| "Идёт установка обновления.")?;
+            let file = updater::download(&version, |received, total| {
+                let _ = app.emit(
+                    "update-progress",
+                    serde_json::json!({"received": received, "total": total}),
+                );
+            })?;
+            let state = app.state::<Shared>();
+            let _ = app.emit("update-installing", ());
+            if let Err(error) = updater::install(file, &version, || {
+                let mut client = lock(&state)?;
+                client.disconnect()?;
+                client.installing_update = true;
+                Ok(())
+            }) {
+                lock(&state)?.installing_update = false;
+                return Err(error);
+            }
+            app.request_restart();
+            Ok(())
+        })
+        .await
+        .map_err(|_| "Не удалось установить обновление.")?;
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = (app, version);
+        Err("Подходящее обновление недоступно.".into())
+    }
+}
+
 fn main() {
-    let app = tauri::Builder::default()
+    #[cfg(target_os = "linux")]
+    if unsafe { libc::geteuid() } == 0 {
+        let mut args = std::env::args().skip(1);
+        let result = match (args.next().as_deref(), args.next(), args.next()) {
+            (Some("--install-update"), Some(version), None) => {
+                updater::install_privileged(&version)
+            }
+            _ => Err("Запускай TangledLink от обычного пользователя."),
+        };
+        if let Err(error) = result {
+            eprintln!("{error}");
+            std::process::exit(1);
+        }
+        return;
+    }
+    let builder = tauri::Builder::default();
+    #[cfg(target_os = "linux")]
+    let builder = builder.manage(UpdateLock::default());
+    let app = builder
         .plugin(tauri_plugin_single_instance::init(|app, _, _| {
             let _ = show_window(app);
         }))
         .manage(Shared::default())
+        .manage(std::sync::atomic::AtomicBool::new(true))
         .invoke_handler(tauri::generate_handler![
-            load_subscription,
             login_account,
+            recover_account,
             refresh_account,
             logout_account,
             select_server,
-            forget_subscription,
             status,
             connect,
             measure_latency,
             disconnect,
-            quit
+            quit,
+            set_close_to_tray,
+            set_vpn_mtu,
+            set_linux_routing,
+            set_core_options,
+            set_language,
+            change_account_password,
+            geofiles_status,
+            update_geofiles,
+            reset_geofiles,
+            launch_split_app,
+            check_for_update,
+            install_update
         ])
         .setup(|app| {
-            #[cfg(any(windows, target_os = "linux"))]
-            if let Some((saved, profiles)) = restore(app.handle()) {
-                let shared = app.state::<Shared>();
-                let mut client = lock(&shared)?;
-                client.saved = Some(saved);
-                client.manual_persisted = true;
-                client.profiles = profiles;
-            }
             #[cfg(any(windows, target_os = "linux"))]
             {
                 let shared = app.state::<Shared>();
                 let mut client = lock(&shared)?;
+                #[cfg(target_os = "linux")]
+                {
+                    client.geo_bundle = Some(geofiles::bundle_path(app.handle())?);
+                }
                 restore_session(app.handle(), &mut client);
                 if client.account.is_some() {
                     let handle = app.handle().clone();
@@ -828,7 +1076,14 @@ fn main() {
             }
             let open = MenuItemBuilder::with_id("open", "Открыть TangledLink").build(app)?;
             let exit = MenuItemBuilder::with_id("quit", "Отключить VPN и выйти").build(app)?;
-            let menu = MenuBuilder::new(app).items(&[&open, &exit]).build()?;
+            let connect = MenuItemBuilder::with_id("connect-vpn", "Подключить выбранный сервер")
+                .build(app)?;
+            let disconnect =
+                MenuItemBuilder::with_id("disconnect-vpn", "Отключить VPN").build(app)?;
+            let menu = MenuBuilder::new(app)
+                .items(&[&open, &connect, &disconnect, &exit])
+                .build()?;
+            app.manage(TrayItems([open, connect, disconnect, exit]));
             TrayIconBuilder::with_id("main")
                 .icon(Image::from_bytes(include_bytes!("../icons/icon.png"))?)
                 .tooltip("TangledLink")
@@ -838,6 +1093,8 @@ fn main() {
                     "open" => {
                         let _ = show_window(app);
                     }
+                    "connect-vpn" => tray_connection(app, true),
+                    "disconnect-vpn" => tray_connection(app, false),
                     "quit" => app.exit(0),
                     _ => {}
                 })
@@ -860,7 +1117,14 @@ fn main() {
         .on_window_event(|window, event| {
             if let WindowEvent::CloseRequested { api, .. } = event {
                 api.prevent_close();
-                let _ = window.destroy();
+                if window
+                    .state::<std::sync::atomic::AtomicBool>()
+                    .load(std::sync::atomic::Ordering::Relaxed)
+                {
+                    let _ = window.destroy();
+                } else {
+                    window.app_handle().exit(0);
+                }
             }
         })
         .build(tauri::generate_context!())

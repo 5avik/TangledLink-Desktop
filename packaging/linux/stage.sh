@@ -15,8 +15,13 @@ repo=$(cd "$packaging/../.." && pwd)
 
 install -Dm755 "$gui" "$stage/usr/bin/tangledlink-desktop"
 install -Dm755 "$helper" "$stage/usr/lib/tangledlink-desktop/tangledlink-tun-helper"
+install -Dm755 "$packaging/tangledlink-update-helper" "$stage/usr/lib/tangledlink-desktop/tangledlink-update-helper"
 install -Dm755 "$xray" "$stage/usr/lib/tangledlink-desktop/xray"
 install -Dm644 "$license" "$stage/usr/share/licenses/tangledlink-desktop/Xray-LICENSE"
 install -Dm644 "$packaging/tangledlink-desktop.desktop" "$stage/usr/share/applications/tangledlink-desktop.desktop"
 install -Dm644 "$packaging/pro.tngl.desktop.policy" "$stage/usr/share/polkit-1/actions/pro.tngl.desktop.policy"
 install -Dm644 "$repo/desktop/icons/icon.png" "$stage/usr/share/icons/hicolor/128x128/apps/tangledlink-desktop.png"
+
+for asset in geoip.dat geosite.dat; do
+    install -Dm644 "$(dirname "$xray")/$asset" "$stage/usr/lib/tangledlink-desktop/$asset"
+done

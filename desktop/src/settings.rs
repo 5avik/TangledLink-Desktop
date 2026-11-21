@@ -1,12 +1,3 @@
-#[derive(serde::Serialize, serde::Deserialize)]
-pub struct Settings {
-    pub link: String,
-    pub body: String,
-    pub selected: usize,
-    #[serde(default)]
-    pub usage: Option<crate::account::Usage>,
-}
-
 #[cfg(windows)]
 mod windows {
     use serde::{Serialize, de::DeserializeOwned};
@@ -85,32 +76,30 @@ mod windows {
     #[cfg(test)]
     mod tests {
         use super::*;
-        use crate::settings::Settings;
+        #[derive(serde::Serialize, serde::Deserialize)]
+        struct Fixture {
+            secret: String,
+        }
+
         #[test]
         fn persists_and_replaces_encrypted_settings() {
             let directory = tempfile::tempdir().unwrap();
             let path = directory.path().join("subscription.bin");
-            let mut settings = Settings {
-                link: "https://example.com/secret".into(),
-                body: "profile-secret".into(),
-                selected: 0,
-                usage: None,
+            let mut settings = Fixture {
+                secret: "test-only-secret".into(),
             };
-            assert!(read::<Settings>(&path).unwrap().is_none());
+            assert!(read::<Fixture>(&path).unwrap().is_none());
             write(&path, &settings).unwrap();
             let bytes = std::fs::read(&path).unwrap();
             assert!(
                 !bytes
-                    .windows(settings.body.len())
-                    .any(|part| part == settings.body.as_bytes())
+                    .windows(settings.secret.len())
+                    .any(|part| part == settings.secret.as_bytes())
             );
-            settings.selected = 2;
+            settings.secret = "replacement-test-secret".into();
             write(&path, &settings).unwrap();
-            let restored: Settings = read(&path).unwrap().unwrap();
-            assert_eq!(
-                (restored.link, restored.body, restored.selected),
-                (settings.link, settings.body, 2)
-            );
+            let restored: Fixture = read(&path).unwrap().unwrap();
+            assert_eq!(restored.secret, settings.secret);
         }
     }
 }

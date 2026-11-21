@@ -9,6 +9,8 @@ pub struct Login<'a> {
     pub id: &'a str,
     pub password: &'a str,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub email: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub email_code: Option<&'a str>,
 }
 
@@ -17,6 +19,7 @@ pub struct Login<'a> {
 struct LoginResponse {
     #[serde(default)]
     email_required: bool,
+    retry_after_seconds: Option<u64>,
     token: Option<String>,
     expires_at: Option<u64>,
 }
@@ -46,33 +49,147 @@ pub fn agent() -> ureq::Agent {
     )
 }
 
-pub fn login(agent: &ureq::Agent, login: Login<'_>) -> Result<Option<Session>, String> {
-    let payload = serde_json::to_vec(&login).map_err(|_| "Не удалось подготовить вход")?;
+pub enum Authentication {
+    EmailRequired(u64),
+    SignedIn(Session),
+}
+
+pub fn authenticate(agent: &ureq::Agent, request: Login<'_>) -> Result<Authentication, String> {
+    let route = if request.email.is_some() {
+        "register"
+    } else {
+        "login"
+    };
+    parse_login(&post(agent, route, &request)?)
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Recovery<'a> {
+    pub id: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub email: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub invite_code: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub email_code: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub password: Option<&'a str>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RecoveryStep {
+    Activation,
+    Code,
+    Support,
+    Done,
+}
+
+#[derive(Serialize)]
+pub struct RecoveryResult {
+    pub step: RecoveryStep,
+    pub retry_after_seconds: u64,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RecoveryResponse {
+    step: Option<RecoveryStep>,
+    #[serde(default)]
+    email_required: bool,
+    #[serde(default)]
+    ok: bool,
+    retry_after_seconds: Option<u64>,
+}
+
+pub fn recover(agent: &ureq::Agent, request: Recovery<'_>) -> Result<RecoveryResult, String> {
+    let route = if request.invite_code.is_some() {
+        "recover-first"
+    } else {
+        "recover"
+    };
+    let confirming = request.email_code.is_some();
+    parse_recovery(&post(agent, route, &request)?, confirming)
+}
+
+fn parse_recovery(text: &str, confirming: bool) -> Result<RecoveryResult, String> {
+    let response: RecoveryResponse =
+        serde_json::from_str(text).map_err(|_| "Некорректный ответ на восстановление пароля")?;
+    let step = match (
+        confirming,
+        response.step,
+        response.email_required,
+        response.ok,
+    ) {
+        (true, _, _, true) => RecoveryStep::Done,
+        (false, Some(RecoveryStep::Code), true, _) => RecoveryStep::Code,
+        (false, Some(step @ (RecoveryStep::Activation | RecoveryStep::Support)), _, _) => step,
+        _ => return Err("Сервис не подтвердил восстановление пароля".into()),
+    };
+    Ok(RecoveryResult {
+        step,
+        retry_after_seconds: if step == RecoveryStep::Code {
+            response.retry_after_seconds.unwrap_or(60)
+        } else {
+            0
+        },
+    })
+}
+
+fn post(agent: &ureq::Agent, route: &str, payload: &impl Serialize) -> Result<String, String> {
+    let payload = serde_json::to_vec(payload).map_err(|_| "Не удалось подготовить запрос")?;
     let response = agent
-        .post(format!("{ROOT}/v1/mobile-auth/login"))
+        .post(format!("{ROOT}/v1/mobile-auth/{route}"))
         .header("Content-Type", "application/json")
         .send(payload.as_slice())
-        .map_err(|_| "Сервис входа недоступен")?;
-    match response.status().as_u16() {
-        400 | 401 | 403 => return Err("Проверь логин, пароль и код из письма".into()),
-        429 => return Err("Слишком много попыток. Попробуй позже.".into()),
-        code if !(200..300).contains(&code) => return Err("Сервис входа недоступен".into()),
-        _ => {}
-    }
+        .map_err(|_| "Сервис аккаунта недоступен")?;
+    let status = response.status().as_u16();
     let text = response
         .into_body()
         .into_with_config()
         .limit(32 * 1024)
         .read_to_string()
-        .map_err(|_| "Не удалось прочитать ответ на вход")?;
-    parse_login(&text)
+        .map_err(|_| "Не удалось прочитать ответ сервиса аккаунта")?;
+    if (200..300).contains(&status) {
+        return Ok(text);
+    }
+    let error = serde_json::from_str::<serde_json::Value>(&text).unwrap_or_default();
+    Err(
+        match error.get("error").and_then(serde_json::Value::as_str) {
+            Some("invalid_email" | "email_required") => "Проверь адрес электронной почты",
+            Some("invalid_email_code") => "Код из письма неверный или истёк",
+            Some(
+                "account_exists" | "id_taken" | "registration_conflict" | "already_registered",
+            ) => "Этот логин уже занят",
+            Some("email_already_used" | "email_in_use") => "Эта почта уже используется",
+            Some("invalid_id" | "registration_invalid_id") => "Проверь логин",
+            Some("password_policy") => "Пароль должен содержать от 12 до 128 символов",
+            Some("recovery_unavailable") => {
+                "Восстановление для этого логина недоступно. Поддержка: tangledlink@gmail.com"
+            }
+            Some("invalid_credentials" | "invalid_activation" | "recovery_changed")
+                if route.starts_with("recover") =>
+            {
+                "Проверь логин и код активации"
+            }
+            _ if status == 429 => "Слишком много попыток. Попробуй позже.",
+            _ if status == 409 => "Аккаунт уже существует или эти данные заняты",
+            _ if status < 500 && route == "login" => "Проверь логин, пароль и код из письма",
+            _ if status < 500 => "Сервис отклонил запрос. Проверь введённые данные.",
+            _ => "Сервис аккаунта недоступен",
+        }
+        .into(),
+    )
 }
 
-fn parse_login(text: &str) -> Result<Option<Session>, String> {
+fn parse_login(text: &str) -> Result<Authentication, String> {
     let response: LoginResponse =
         serde_json::from_str(text).map_err(|_| "Некорректный ответ на вход")?;
     if response.email_required {
-        return Ok(None);
+        return Ok(Authentication::EmailRequired(
+            response.retry_after_seconds.unwrap_or(60),
+        ));
     }
     let session = Session {
         token: response
@@ -86,7 +203,7 @@ fn parse_login(text: &str) -> Result<Option<Session>, String> {
     if session.expired() {
         return Err("Срок сессии истёк".into());
     }
-    Ok(Some(session))
+    Ok(Authentication::SignedIn(session))
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -159,6 +276,28 @@ pub fn subscription(agent: &ureq::Agent, session: &Session) -> Result<Subscripti
     }
 }
 
+pub fn change_password(
+    agent: &ureq::Agent,
+    session: &Session,
+    current: &str,
+    new_password: &str,
+) -> Result<(), String> {
+    let body =
+        serde_json::json!({"currentPassword":current,"newPassword":new_password}).to_string();
+    let response = agent
+        .post(format!("{ROOT}/v1/password"))
+        .header("Authorization", format!("Bearer {}", session.token))
+        .header("Content-Type", "application/json")
+        .send(body.as_bytes())
+        .map_err(|_| "Сервис аккаунта недоступен")?;
+    match response.status().as_u16() {
+        200..=299 => Ok(()),
+        400..=403 => Err("Не удалось изменить пароль. Проверь текущий пароль и сессию.".into()),
+        429 => Err("Слишком много попыток. Попробуй позже.".into()),
+        _ => Err("Сервис аккаунта недоступен".into()),
+    }
+}
+
 pub fn logout(agent: &ureq::Agent, session: &Session) -> bool {
     agent
         .post(format!("{ROOT}/v1/logout"))
@@ -200,17 +339,48 @@ mod tests {
     }
 
     #[test]
+    fn recovery_requires_confirmed_challenge_and_completion() {
+        assert_eq!(
+            parse_recovery(r#"{"step":"activation"}"#, false)
+                .unwrap()
+                .step,
+            RecoveryStep::Activation
+        );
+        assert_eq!(
+            parse_recovery(r#"{"step":"support"}"#, false).unwrap().step,
+            RecoveryStep::Support
+        );
+        let challenge = parse_recovery(
+            r#"{"step":"code","emailRequired":true,"retryAfterSeconds":30}"#,
+            false,
+        )
+        .unwrap();
+        assert_eq!(
+            (challenge.step, challenge.retry_after_seconds),
+            (RecoveryStep::Code, 30)
+        );
+        assert!(parse_recovery(r#"{"step":"code"}"#, false).is_err());
+        assert!(parse_recovery(r#"{"step":"code","emailRequired":true}"#, true).is_err());
+        assert_eq!(
+            parse_recovery(r#"{"ok":true}"#, true).unwrap().step,
+            RecoveryStep::Done
+        );
+    }
+
+    #[test]
     fn parses_email_challenge() {
-        assert!(parse_login(r#"{"emailRequired":true}"#).unwrap().is_none());
+        assert!(matches!(
+            parse_login(r#"{"emailRequired":true,"retryAfterSeconds":45}"#).unwrap(),
+            Authentication::EmailRequired(45)
+        ));
     }
 
     #[test]
     fn validates_session_shape_and_expiration() {
-        assert!(
-            parse_login(r#"{"token":"test","expiresAt":4102444800}"#)
-                .unwrap()
-                .is_some()
-        );
+        assert!(matches!(
+            parse_login(r#"{"token":"test","expiresAt":4102444800}"#).unwrap(),
+            Authentication::SignedIn(_)
+        ));
         assert!(parse_login(r#"{"token":"test","expiresAt":1}"#).is_err());
         assert!(parse_login(r#"{"token":"","expiresAt":4102444800}"#).is_err());
     }

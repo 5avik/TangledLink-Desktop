@@ -53,8 +53,6 @@ form label { display: block; font-size: 13px; margin-bottom: 8px; }
 }
 .message { color: #c1dbd2; margin: 8px 0 0; min-height: 19px; font-size: 13px; }
 :focus-visible { outline: 2px solid #bbffe1; outline-offset: 2px; }
-.subscription-actions { margin-top: 8px; }
-.subscription-actions button { padding: 6px 10px; }
 .account { margin-top: 18px; border: 1px solid #354d4a; border-radius: 12px; padding: 12px; }
 .account summary { cursor: pointer; font-size: 14px; font-weight: 650; overflow-wrap: anywhere; }
 .account form, #signed-in { margin-top: 12px; }
@@ -76,3 +74,55 @@ form label { display: block; font-size: 13px; margin-bottom: 8px; }
 .server-tools button[aria-pressed="true"] { border-color: #9af3c9; }
 .delay { min-width: 68px; text-align: right; }
 #quit-app { margin-left: auto; padding: 6px 10px; }
+
+.sign-in { max-width: 385px; margin: 28px auto 0; padding: 20px; }
+.sign-in h2 { font-size: 20px; }
+.sign-in button { width: 100%; margin-top: 4px; }
+main:has(.sign-in:not([hidden])) .message { max-width: 385px; margin: 8px auto 0; }
+#auth-nav { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+#auth-nav button { width: auto; flex: 1; }
+#auth-nav button[hidden] { display: none; }
+.sign-in fieldset { border: 0; padding: 0; margin: 0; min-width: 0; }
+.sign-in .caption { margin-bottom: 12px; }
+#auth-resend, #recovery-resend { margin-bottom: 8px; }
+#preferences label { display: block; margin-top: 14px; font-size: 14px; }
+#preferences select { display: block; margin-top: 8px; padding: 8px; background: #263e3d; color: inherit; border: 1px solid #42615d; border-radius: 8px; font: inherit; }
+#preferences .checkbox-setting { display: flex; align-items: center; gap: 10px; }
+#preferences input[type="checkbox"] { width: auto; margin: 0; }
+:root[data-theme="light"] { color-scheme: light; background: #f0f5f3; color: #182f29; }
+[data-theme="light"] .connection, [data-theme="light"] .servers, [data-theme="light"] .account input, [data-theme="light"] .field-row input { background: #fff; color: #182f29; }
+[data-theme="light"] .caption, [data-theme="light"] .message, [data-theme="light"] .transport, [data-theme="light"] .empty, [data-theme="light"] .subscription-stats { color: #405d54; }
+[data-theme="light"] .secondary, [data-theme="light"] #preferences select { background: #dce9e3; color: #182f29; }
+[data-theme="light"] .server:has(input:checked) { background: #d4ecdf; }
+[data-theme="light"] .status.online, [data-theme="light"] #subscription-state { color: #166741; }
+#linux-vpn-settings textarea { display: block; width: 100%; margin: 8px 0; background: #152728; color: inherit; border: 1px solid #42615d; border-radius: 8px; padding: 8px; font: inherit; }
+[data-theme="light"] #linux-vpn-settings textarea { background: white; }
+
+#geofiles dl {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 6px 16px;
+  margin: 12px 0;
+}
+
+#geofiles dd { margin: 0; }
+.geo-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+
+.split-program-entry, #split-programs li { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.split-program-entry input, #split-programs li span { flex: 1 1 180px; overflow-wrap: anywhere; }
+#split-programs { list-style: none; padding: 0; }
+#split-programs li + li { margin-top: 8px; }
+
+.save-action { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; }
+.save-status { font-size: 13px; font-weight: 650; }
+.sign-in .save-action button { flex: 1; width: auto; }
+
+.update-check { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 14px; font-size: 13px; }
+#update-dialog { width: min(480px, calc(100% - 28px)); color: inherit; background: #1a3130; border: 1px solid #42615d; border-radius: 12px; padding: 20px; }
+[data-theme="light"] #update-dialog { background: #f0f5f3; }
+#update-dialog::backdrop { background: rgb(0 0 0 / 56%); }
+#update-version { font-weight: 650; }
+#update-notes { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 38vh; overflow-y: auto; }
+#update-progress { width: 100%; margin-top: 12px; }
+#update-status { min-height: 1em; font-size: 13px; }
+.visually-hidden { position: absolute; width: 1px; height: 1px; padding: 0; overflow: hidden; clip-path: inset(50%); }
