@@ -1,4 +1,8 @@
 export const english: Record<string, string> = {
+  "Обновить подписку": "Refresh subscription",
+  "Обновляем подписку…": "Refreshing subscription…",
+  "Подписка обновлена.": "Subscription refreshed.",
+  "Подписка обновлена. Новый список серверов применится после отключения VPN.": "Subscription refreshed. The new server list will apply after disconnecting the VPN.",
   "1 месяц": "1 month",
   "3 месяца": "3 months",
   "6 месяцев": "6 months",

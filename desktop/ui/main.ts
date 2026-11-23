@@ -10,7 +10,7 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 
 type Server = { name: string; transport: string };
 type Usage = { used: number | null; limit: number | null; expires_at: number | null };
-type Snapshot = { can_quit: boolean; checking_session: boolean; servers: Server[]; active: number | null; selected: number; warning: string | null; account: string | null; account_notice: string | null; subscribed: boolean | null; usage: Usage | null };
+type Snapshot = { servers_deferred?: boolean; can_quit: boolean; checking_session: boolean; servers: Server[]; active: number | null; selected: number; warning: string | null; account: string | null; account_notice: string | null; subscribed: boolean | null; usage: Usage | null };
 
 const serverTools = document.querySelector<HTMLDivElement>("#server-tools")!;
 const search = document.querySelector<HTMLInputElement>("#server-search")!;
@@ -52,7 +52,7 @@ const code = document.querySelector<HTMLInputElement>("#account-code")!;
 const challenge = document.querySelector<HTMLDivElement>("#challenge")!;
 const accountNotice = document.querySelector<HTMLParagraphElement>("#account-notice")!;
 const loginButton = document.querySelector<HTMLButtonElement>("#login-submit")!;
-const refreshButton = document.querySelector<HTMLButtonElement>("#account-refresh")!;
+const refreshButtons = document.querySelectorAll<HTMLButtonElement>("#account-refresh, #subscription-refresh");
 const logoutButton = document.querySelector<HTMLButtonElement>("#account-logout")!;
 
 const authTitle = document.querySelector<HTMLHeadingElement>("#sign-in-title")!;
@@ -134,7 +134,7 @@ function renderSubscriptionStats() {
   for (const field of [subscriptionState, subscriptionUsage, subscriptionExpiry]) {
     field.hidden = !field.textContent;
   }
-  stats.hidden = ![subscriptionState, subscriptionUsage, subscriptionExpiry].some(field => !field.hidden);
+  stats.hidden = current.account === null;
 }
 
 function renderAuth() {
@@ -220,7 +220,7 @@ function renderControls() {
   dashboard.hidden = checking || !signed;
   renderAuth();
   if (wasHidden && !signIn.hidden) (authMode === "recover" ? recoveryId : accountId).focus();
-  refreshButton.disabled = busy || active;
+  for (const button of refreshButtons) button.disabled = busy;
   logoutButton.disabled = busy;
   accountNotice.textContent = t(current.account_notice ?? "");
   serverTools.hidden = current.servers.length === 0;
@@ -364,7 +364,7 @@ toggle.addEventListener("click", () => {
   connectionAction = command;
   connectionError = null;
   pendingServer = null;
-  void act(() => invoke(command, { index: current.selected }), () => {});
+  void act(() => invoke(command, { index: current.selected }), renderServers);
 });
 
 switchServer.addEventListener("click", () => {
@@ -476,9 +476,16 @@ recoverForm.addEventListener("submit", (event) => {
 });
 recoveryResend.addEventListener("click", () => submitRecovery(true));
 
-refreshButton.addEventListener("click", () => {
-  void act(() => invoke("refresh_account"), () => { clearLatency(); renderServers(); });
-});
+for (const button of refreshButtons) {
+  button.addEventListener("click", () => {
+    void act(() => invoke("refresh_account"), snapshot => {
+      renderServers();
+      if (snapshot.account) message.textContent = t(snapshot.servers_deferred
+        ? "Подписка обновлена. Новый список серверов применится после отключения VPN."
+        : "Подписка обновлена.");
+    }, t("Обновляем подписку…"));
+  });
+}
 
 logoutButton.addEventListener("click", () => {
   void act(() => invoke("logout_account"), (snapshot) => {

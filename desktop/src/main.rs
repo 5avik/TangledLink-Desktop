@@ -59,11 +59,33 @@ struct Account {
     persisted: bool,
     restoring: bool,
     profiles: Vec<Profile>,
+    pending_profiles: Option<Vec<Profile>>,
     selected: usize,
     notice: Option<String>,
     usage: Option<account::Usage>,
     subscribed: Option<bool>,
 }
+
+impl Account {
+    fn apply_pending_profiles(&mut self) {
+        let Some(profiles) = self.pending_profiles.take() else {
+            return;
+        };
+        self.selected = self
+            .profiles
+            .get(self.selected)
+            .and_then(|previous| {
+                profiles.iter().position(|profile| {
+                    profile.name == previous.name && profile.transport == previous.transport
+                })
+            })
+            .unwrap_or(0);
+        self.profiles = profiles;
+    }
+}
+
+#[derive(Default)]
+struct SubscriptionRefresh(Mutex<()>);
 
 type Shared = Mutex<Client>;
 
@@ -76,6 +98,7 @@ struct Server {
 #[derive(serde::Serialize)]
 struct Snapshot {
     servers: Vec<Server>,
+    servers_deferred: bool,
     can_quit: bool,
     checking_session: bool,
     account: Option<String>,
@@ -113,7 +136,16 @@ impl Client {
             self.tunnel = None;
             self.active = None;
         }
+        if self.active.is_none()
+            && let Some(account) = &mut self.account
+        {
+            account.apply_pending_profiles();
+        }
         Ok(Snapshot {
+            servers_deferred: self
+                .account
+                .as_ref()
+                .is_some_and(|account| account.pending_profiles.is_some()),
             can_quit: cfg!(target_os = "linux"),
             checking_session: self
                 .account
@@ -455,6 +487,7 @@ fn restore_session(app: &AppHandle, client: &mut Client) {
                 persisted: true,
                 restoring: true,
                 profiles: Vec::new(),
+                pending_profiles: None,
                 selected: 0,
                 notice: Some("Загружаем серверы аккаунта…".into()),
                 usage: None,
@@ -587,6 +620,7 @@ async fn login_account(
             persisted,
             restoring: false,
             profiles: update.profiles,
+            pending_profiles: None,
             selected: 0,
             notice: update.notice,
             usage: update.usage,
@@ -702,80 +736,74 @@ async fn billing_checkout(
 }
 
 #[tauri::command]
-async fn refresh_account(app: AppHandle, billing_sync: Option<bool>) -> Result<Snapshot, String> {
-    let billing_sync = billing_sync.unwrap_or(false);
-    tauri::async_runtime::spawn_blocking(move || {
-        let shared = app.state::<Shared>();
-        let session = {
-            let mut client = lock(&shared)?;
-            if !billing_sync && client.snapshot()?.active.is_some() {
-                return Err("Сначала отключи VPN".into());
-            }
-            client
-                .account
-                .as_ref()
-                .ok_or("Сначала войди в аккаунт")?
-                .session
-                .clone()
-        };
-        let update = account_profiles(&account::agent(), &session);
-        let mut client = lock(&shared)?;
-        let active = client.active.is_some();
-        if active && !billing_sync {
-            return client.snapshot();
+async fn refresh_account(app: AppHandle) -> Result<Snapshot, String> {
+    tauri::async_runtime::spawn_blocking(move || refresh_subscription(&app, true))
+        .await
+        .map_err(|_| "Ошибка обновления аккаунта".to_owned())?
+}
+
+fn refresh_subscription(app: &AppHandle, report_errors: bool) -> Result<Snapshot, String> {
+    let refresh = app.state::<SubscriptionRefresh>();
+    let _guard = refresh
+        .0
+        .lock()
+        .map_err(|_| "Ошибка обновления аккаунта")?;
+    let shared = app.state::<Shared>();
+    let session = lock(&shared)?
+        .account
+        .as_ref()
+        .ok_or("Сначала войди в аккаунт")?
+        .session
+        .clone();
+    let update = account_profiles(&account::agent(), &session);
+    let mut client = lock(&shared)?;
+    let Some(account) = client
+        .account
+        .as_mut()
+        .filter(|account| account.session == session)
+    else {
+        return client.snapshot();
+    };
+    let Some(update) = update else {
+        client.disconnect()?;
+        client.account = None;
+        client.warning = Some(
+            forget_session(app)
+                .err()
+                .unwrap_or_else(|| "Сессия истекла. Войди снова.".into()),
+        );
+        return client.snapshot();
+    };
+    if update.subscribed.is_none() {
+        if report_errors && !account.restoring {
+            return Err(update
+                .notice
+                .unwrap_or_else(|| "Не удалось загрузить подписку аккаунта".into()));
         }
-        let Some(account) = client
-            .account
-            .as_mut()
-            .filter(|account| account.session == session)
-        else {
-            return client.snapshot();
-        };
-        let Some(update) = update else {
-            client.disconnect()?;
+        if account.restoring {
             client.account = None;
-            client.warning = Some(
-                forget_session(&app)
-                    .err()
-                    .unwrap_or_else(|| "Сессия истекла. Войди снова.".into()),
-            );
-            return client.snapshot();
-        };
-        if update.subscribed.is_none() {
-            if billing_sync {
-                return Err(update
-                    .notice
-                    .unwrap_or_else(|| "Не удалось загрузить подписку аккаунта".into()));
-            }
-            if account.restoring {
-                client.account = None;
-                client.warning =
-                    Some("Не удалось подтвердить сохранённую сессию. Войди снова.".into());
-            } else {
-                account.notice = update.notice;
-            }
-            return client.snapshot();
+            client.warning = Some("Не удалось подтвердить сохранённую сессию. Войди снова.".into());
+        } else {
+            account.notice = update.notice;
         }
-        account.restoring = false;
-        if !active {
-            account.selected = account
-                .profiles
-                .get(account.selected)
-                .and_then(|previous| {
-                    update.profiles.iter().position(|profile| {
-                        profile.name == previous.name && profile.transport == previous.transport
-                    })
-                })
-                .unwrap_or(0);
-            account.profiles = update.profiles;
-        }
-        account.notice = update.notice;
-        account.usage = update.usage;
-        account.subscribed = update.subscribed;
-        client.snapshot()
-    })
-    .await
-    .map_err(|_| "Ошибка обновления аккаунта".to_owned())?
+        return client.snapshot();
+    }
+    account.restoring = false;
+    let unchanged = account.profiles.len() == update.profiles.len()
+        && account
+            .profiles
+            .iter()
+            .zip(&update.profiles)
+            .all(|(old, new)| {
+                old.name == new.name
+                    && old.transport == new.transport
+                    && old.outbound == new.outbound
+            });
+    account.pending_profiles = (!unchanged).then_some(update.profiles);
+    account.notice = update.notice;
+    account.usage = update.usage;
+    account.subscribed = update.subscribed;
+    client.snapshot()
 }
 
 #[tauri::command]
@@ -1182,6 +1210,7 @@ fn main() {
             let _ = show_window(app);
         }))
         .manage(Shared::default())
+        .manage(SubscriptionRefresh::default())
         .manage(std::sync::atomic::AtomicBool::new(true))
         .invoke_handler(tauri::generate_handler![
             login_account,
@@ -1222,11 +1251,19 @@ fn main() {
                 restore_session(app.handle(), &mut client);
                 if client.account.is_some() {
                     let handle = app.handle().clone();
-                    tauri::async_runtime::spawn(async move {
-                        let _ = refresh_account(handle, None).await;
+                    tauri::async_runtime::spawn_blocking(move || {
+                        let _ = refresh_subscription(&handle, false);
                     });
                 }
             }
+            // Keep subscription checks running when the window is closed to the tray.
+            let subscription_app = app.handle().clone();
+            std::thread::spawn(move || {
+                loop {
+                    std::thread::sleep(std::time::Duration::from_secs(15 * 60));
+                    let _ = refresh_subscription(&subscription_app, false);
+                }
+            });
             let open = MenuItemBuilder::with_id("open", "Открыть TangledLink").build(app)?;
             let exit = MenuItemBuilder::with_id("quit", "Отключить VPN и выйти").build(app)?;
             let connect = MenuItemBuilder::with_id("connect-vpn", "Подключить выбранный сервер")
@@ -1293,6 +1330,50 @@ fn main() {
         }
         _ => {}
     });
+}
+
+#[cfg(test)]
+mod subscription_refresh_tests {
+    use super::*;
+
+    #[test]
+    fn refreshed_servers_wait_for_disconnect_and_keep_the_selected_server() {
+        let make_profile = |name: &str| Profile {
+            #[cfg(target_os = "linux")]
+            source: String::new(),
+            name: name.into(),
+            transport: "raw".into(),
+            outbound: serde_json::Value::Null,
+        };
+        let mut client = Client {
+            active: Some(1),
+            account: Some(Account {
+                id: "fixture".into(),
+                session: serde_json::from_value(serde_json::json!({
+                    "token": "fixture", "expires_at": 4102444800u64
+                }))
+                .unwrap(),
+                persisted: false,
+                restoring: false,
+                profiles: vec![make_profile("old"), make_profile("selected")],
+                pending_profiles: Some(vec![make_profile("selected"), make_profile("new")]),
+                selected: 1,
+                notice: None,
+                usage: None,
+                subscribed: Some(true),
+            }),
+            ..Default::default()
+        };
+        let connected = client.snapshot().unwrap();
+        assert!(connected.servers_deferred);
+        assert_eq!(connected.servers[0].name, "old");
+        assert_eq!(connected.active, Some(1));
+        client.disconnect().unwrap();
+        let disconnected = client.snapshot().unwrap();
+        assert!(!disconnected.servers_deferred);
+        assert_eq!(disconnected.selected, 0);
+        assert_eq!(disconnected.servers[1].name, "new");
+    }
 }
 
 #[cfg(all(target_os = "linux", test))]

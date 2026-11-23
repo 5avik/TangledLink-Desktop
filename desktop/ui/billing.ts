@@ -87,7 +87,7 @@ function render() {
 async function syncPaid() {
   if (order?.status !== "paid" || order.pendingSync || synced === order.id) return;
   const id = order.id;
-  await invoke("refresh_account", { billingSync: true });
+  await invoke("refresh_account");
   synced = id;
 }
 

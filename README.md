@@ -7,9 +7,9 @@
 Сборка использует GTK 3 и WebKitGTK 4.1. Интерфейс запускается от обычного пользователя. Системный пакет устанавливает Xray и отдельный TUN-помощник. Polkit запрашивает подтверждение администратора при создании туннеля. Для системного DNS нужен работающий systemd-resolved. Для сохранения сессии и подписки нужен доступный Secret Service, например GNOME Keyring.
 
 ```sh
-sudo apt install ./tangledlink-desktop_1.0.1-1_amd64.deb
-sudo dnf install ./tangledlink-desktop-1.0.1-1.x86_64.rpm
-sudo pacman -U ./tangledlink-desktop-1.0.1-1-x86_64.pkg.tar.zst
+sudo apt install ./tangledlink-desktop_1.0.2-1_amd64.deb
+sudo dnf install ./tangledlink-desktop-1.0.2-1.x86_64.rpm
+sudo pacman -U ./tangledlink-desktop-1.0.2-1-x86_64.pkg.tar.zst
 ```
 
 Выполни одну команду для своей системы. После установки открой TangledLink Desktop из меню приложений или запусти `tangledlink-desktop`. Отдельный ELF подходит для запуска интерфейса с системными библиотеками. Для подключения он использует помощник из установленного пакета.

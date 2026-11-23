@@ -206,7 +206,8 @@ form label, #preferences label { display: block; font-size: 13px; margin: 10px 0
   *, *::before, *::after { animation: none !important; transition: none !important; }
 }
 
-.subscription-stats [data-open-billing] { margin-top: 8px; padding: 5px 9px; font-size: 12px; }
+.subscription-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.subscription-actions button { padding: 5px 9px; font-size: 12px; }
 #billing-instructions { white-space: pre-wrap; }
 #billing-instructions:empty, #billing-order:empty { display: none; }
 .billing-form fieldset { min-width: 0; margin: 0; padding: 0; border: 0; }
