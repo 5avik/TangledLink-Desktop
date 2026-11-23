@@ -205,3 +205,13 @@ form label, #preferences label { display: block; font-size: 13px; margin: 10px 0
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation: none !important; transition: none !important; }
 }
+
+.subscription-stats [data-open-billing] { margin-top: 8px; padding: 5px 9px; font-size: 12px; }
+#billing-instructions { white-space: pre-wrap; }
+#billing-instructions:empty, #billing-order:empty { display: none; }
+.billing-form fieldset { min-width: 0; margin: 0; padding: 0; border: 0; }
+.billing-form input, .billing-form select {
+  display: block; width: 100%; min-width: 0; padding: 8px; border: 1px solid var(--line);
+  border-radius: 9px; background: var(--field); color: inherit;
+}
+.billing-form button, #billing-dialog .save-action { margin-top: 10px; }

@@ -108,6 +108,7 @@
         <p id="subscription-state"></p>
         <p id="subscription-expiry"></p>
         <p id="subscription-usage"></p>
+        <button type="button" class="secondary" data-open-billing>Продлить подписку</button>
       </section>
 
       <details class="connection-info">
@@ -151,6 +152,7 @@
             </form>
           </details>
         </div>
+        <button type="button" class="secondary" data-open-billing>Продлить подписку</button>
         <p id="account-message" class="message" role="status"></p>
   </dialog>
 
@@ -245,6 +247,31 @@
       </details>
       <button id="quit-app" type="button" class="secondary" hidden>Выйти из приложения</button>
     </section>
+  </dialog>
+  <dialog id="billing-dialog" class="panel-dialog" aria-labelledby="billing-title">
+    <div class="dialog-header">
+      <h2 id="billing-title">Продлить подписку</h2>
+      <button id="billing-close" type="button" class="icon-button" aria-label="Закрыть">×</button>
+    </div>
+    <p id="billing-order" class="caption"></p>
+    <p id="billing-instructions" class="caption"></p>
+    <form id="billing-form" class="billing-form" hidden>
+      <fieldset>
+        <label for="billing-plan">Тариф</label>
+        <select id="billing-plan" required></select>
+        <label for="billing-email">Почта для чека</label>
+        <input id="billing-email" type="email" autocomplete="email" maxlength="254" required>
+        <label for="billing-promo">Промокод</label>
+        <input id="billing-promo" type="text" maxlength="36" spellcheck="false" autocomplete="off">
+        <p id="billing-locked" class="caption" hidden>У счёта уже есть тариф и условия оплаты. Выбрать другой тариф и применить промокод можно при создании следующего счёта.</p>
+        <button id="billing-create" type="submit" class="primary">Перейти к оплате</button>
+      </fieldset>
+    </form>
+    <div class="save-action">
+      <button id="billing-resume" type="button" class="primary" hidden>Перейти к оплате</button>
+      <button id="billing-refresh" type="button" class="secondary">Проверить оплату</button>
+    </div>
+    <p id="billing-status" class="message" role="status"></p>
   </dialog>
   <dialog id="update-dialog" aria-labelledby="update-title">
     <h2 id="update-title">Доступно обновление</h2>

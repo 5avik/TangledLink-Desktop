@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-const ROOT: &str = "https://auth.tngl.pro:8443";
+pub(crate) const ROOT: &str = "https://auth.tngl.pro:8443";
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -31,6 +31,10 @@ pub struct Session {
 }
 
 impl Session {
+    pub(crate) fn token(&self) -> &str {
+        &self.token
+    }
+
     pub fn expired(&self) -> bool {
         self.token.is_empty()
             || SystemTime::now()

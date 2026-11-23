@@ -3602,7 +3602,7 @@ dependencies = [
 
 [[package]]
 name = "tangledlink-app"
-version = "1.0.0"
+version = "1.0.1"
 dependencies = [
  "libc",
  "semver",
@@ -3621,7 +3621,7 @@ dependencies = [
 
 [[package]]
 name = "tangledlink-desktop"
-version = "1.0.0"
+version = "1.0.1"
 dependencies = [
  "base64 0.22.1",
  "ctrlc",

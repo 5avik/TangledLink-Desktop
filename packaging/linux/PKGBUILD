@@ -1,11 +1,11 @@
 pkgname=tangledlink-desktop
-pkgver=1.0.0
+pkgver=1.0.1
 pkgrel=1
 pkgdesc='TangledLink VPN client'
 arch=('x86_64')
 url='https://tngl.pro'
 license=('LicenseRef-TangledLink')
-depends=('webkit2gtk-4.1' 'gtk3' 'libayatana-appindicator' 'polkit' 'iproute2' 'nftables' 'libsecret' 'systemd')
+depends=('webkit2gtk-4.1' 'gtk3' 'libayatana-appindicator' 'polkit' 'iproute2' 'nftables' 'libsecret' 'systemd' 'xdg-utils')
 options=('!strip' '!debug')
 source=('payload.tar')
 sha256sums=('SKIP')

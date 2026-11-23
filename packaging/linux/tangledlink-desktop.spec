@@ -2,13 +2,13 @@
 %global __os_install_post %{nil}
 %global _build_id_links none
 Name: tangledlink-desktop
-Version: 1.0.0
+Version: 1.0.1
 Release: 1
 Summary: TangledLink VPN client
 License: LicenseRef-TangledLink
 URL: https://tngl.pro
 Source0: payload.tar
-Requires: webkit2gtk4.1, gtk3, libayatana-appindicator-gtk3, polkit, iproute, nftables, libsecret, systemd-resolved
+Requires: webkit2gtk4.1, gtk3, libayatana-appindicator-gtk3, polkit, iproute, nftables, libsecret, systemd-resolved, xdg-utils
 
 %description
 TangledLink desktop client with a Polkit-authorized Xray TUN helper.

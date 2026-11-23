@@ -1,6 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod account;
+mod billing;
 #[cfg(target_os = "linux")]
 mod geofiles;
 mod latency;
@@ -657,13 +658,57 @@ async fn recover_account(
     .map_err(|_| "Ошибка восстановления пароля".to_owned())?
 }
 
+fn billing_session(shared: &Shared) -> Result<account::Session, String> {
+    lock(shared)?
+        .account
+        .as_ref()
+        .filter(|account| !account.session.expired())
+        .map(|account| account.session.clone())
+        .ok_or_else(|| "Сессия истекла. Войди снова.".into())
+}
+
 #[tauri::command]
-async fn refresh_account(app: AppHandle) -> Result<Snapshot, String> {
+async fn billing_status(app: AppHandle) -> Result<billing::Billing, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let shared = app.state::<Shared>();
+        let session = billing_session(&shared)?;
+        let billing = billing::load(&session)?;
+        if billing_session(&shared)? != session {
+            return Err("Сессия истекла. Войди снова.".into());
+        }
+        Ok(billing)
+    })
+    .await
+    .map_err(|_| "Оплата временно недоступна.")?
+}
+
+#[tauri::command]
+async fn billing_checkout(
+    app: AppHandle,
+    action: billing::Checkout,
+) -> Result<billing::Order, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let shared = app.state::<Shared>();
+        let session = billing_session(&shared)?;
+        let order = billing::checkout(&session, action)?;
+        if billing_session(&shared)? != session {
+            return Err("Сессия истекла. Войди снова.".into());
+        }
+        order.open_checkout()?;
+        Ok(order)
+    })
+    .await
+    .map_err(|_| "Оплата временно недоступна.")?
+}
+
+#[tauri::command]
+async fn refresh_account(app: AppHandle, billing_sync: Option<bool>) -> Result<Snapshot, String> {
+    let billing_sync = billing_sync.unwrap_or(false);
     tauri::async_runtime::spawn_blocking(move || {
         let shared = app.state::<Shared>();
         let session = {
             let mut client = lock(&shared)?;
-            if client.snapshot()?.active.is_some() {
+            if !billing_sync && client.snapshot()?.active.is_some() {
                 return Err("Сначала отключи VPN".into());
             }
             client
@@ -675,7 +720,8 @@ async fn refresh_account(app: AppHandle) -> Result<Snapshot, String> {
         };
         let update = account_profiles(&account::agent(), &session);
         let mut client = lock(&shared)?;
-        if client.active.is_some() {
+        let active = client.active.is_some();
+        if active && !billing_sync {
             return client.snapshot();
         }
         let Some(account) = client
@@ -696,6 +742,11 @@ async fn refresh_account(app: AppHandle) -> Result<Snapshot, String> {
             return client.snapshot();
         };
         if update.subscribed.is_none() {
+            if billing_sync {
+                return Err(update
+                    .notice
+                    .unwrap_or_else(|| "Не удалось загрузить подписку аккаунта".into()));
+            }
             if account.restoring {
                 client.account = None;
                 client.warning =
@@ -706,16 +757,18 @@ async fn refresh_account(app: AppHandle) -> Result<Snapshot, String> {
             return client.snapshot();
         }
         account.restoring = false;
-        account.selected = account
-            .profiles
-            .get(account.selected)
-            .and_then(|previous| {
-                update.profiles.iter().position(|profile| {
-                    profile.name == previous.name && profile.transport == previous.transport
+        if !active {
+            account.selected = account
+                .profiles
+                .get(account.selected)
+                .and_then(|previous| {
+                    update.profiles.iter().position(|profile| {
+                        profile.name == previous.name && profile.transport == previous.transport
+                    })
                 })
-            })
-            .unwrap_or(0);
-        account.profiles = update.profiles;
+                .unwrap_or(0);
+            account.profiles = update.profiles;
+        }
         account.notice = update.notice;
         account.usage = update.usage;
         account.subscribed = update.subscribed;
@@ -1134,6 +1187,8 @@ fn main() {
             login_account,
             recover_account,
             refresh_account,
+            billing_status,
+            billing_checkout,
             logout_account,
             select_server,
             status,
@@ -1168,7 +1223,7 @@ fn main() {
                 if client.account.is_some() {
                     let handle = app.handle().clone();
                     tauri::async_runtime::spawn(async move {
-                        let _ = refresh_account(handle).await;
+                        let _ = refresh_account(handle, None).await;
                     });
                 }
             }

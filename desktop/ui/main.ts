@@ -1,3 +1,4 @@
+import { setBillingAccount } from "./billing";
 import "./updater";
 import { saveStatus } from "./save-status";
 import { t, locale } from "./i18n";
@@ -209,6 +210,7 @@ function renderControls() {
   infoCore.textContent = active ? t("Работает") : "—";
   const signed = current.account !== null;
   accountName.textContent = current.account ?? "";
+  setBillingAccount(current.account);
   accountMessage.textContent = message.textContent;
   if (!signed && accountDialog.open) accountDialog.close();
   const wasHidden = signIn.hidden;
