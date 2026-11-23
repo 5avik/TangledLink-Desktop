@@ -8,10 +8,15 @@
 </head>
 <body>
   <main>
-    <header>
-      <span class="mark" aria-hidden="true">T</span>
+    <header class="app-header">
+      <img class="brand-icon" src="/icons/icon.png" alt="" width="32" height="32">
       <h1>TangledLink</h1>
-      <button id="quit-app" type="button" class="secondary" hidden>Выйти из приложения</button>
+      <button id="open-settings" type="button" class="icon-button" aria-label="Настройки" title="Настройки">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M4 17h16"/><circle cx="8" cy="7" r="2.5"/><circle cx="15" cy="17" r="2.5"/></svg>
+      </button>
+      <button id="minimize-app" type="button" class="icon-button" aria-label="Свернуть окно" title="Свернуть окно">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 12h12"/></svg>
+      </button>
     </header>
 
     <p id="startup" class="caption" role="status">Проверяем сохранённую сессию…</p>
@@ -71,37 +76,63 @@
     </section>
 
     <div id="dashboard" hidden>
-      <section class="connection" aria-label="Подключение">
-        <div>
-          <p class="status" id="status" aria-live="polite">VPN отключён</p>
-          <p class="caption" id="active-name">Выбери сервер для подключения</p>
-        </div>
-        <div class="connection-actions">
-          <button id="switch-server" class="primary" hidden>Переключить</button>
-          <button id="toggle" class="primary" disabled>Подключить</button>
-        </div>
+      <section class="connection" data-state="disconnected" aria-label="Подключение">
+        <button id="toggle" class="power" type="button" aria-label="Подключить" disabled>
+          <span class="power-face">
+            <svg viewBox="0 0 32 32" aria-hidden="true"><path d="M16 4v11M9.1 8.8a11 11 0 1 0 13.8 0"/></svg>
+          </span>
+        </button>
+        <p class="status" id="status" aria-live="polite">Не подключено</p>
+        <p class="caption" id="active-name">Нажми для подключения</p>
       </section>
+
+      <div class="server-picker" id="server-picker">
+        <button id="server-trigger" type="button" class="server-trigger" aria-controls="server-panel" aria-expanded="false">
+          <span class="selector-content"><strong id="selected-server">Выбери сервер</strong><span class="transport" id="selected-protocol"></span></span>
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m7 10 5 5 5-5"/></svg>
+        </button>
+        <section id="server-panel" class="server-panel" aria-label="Серверы" hidden>
+          <div id="server-tools" class="field-row server-tools" hidden>
+            <input id="server-search" type="search" placeholder="Поиск сервера" aria-label="Поиск сервера">
+            <div class="measure-actions">
+              <button id="measure-latency" class="secondary" type="button" title="Проверка прямого TCP-подключения к адресу сервера">Задержка TCP</button>
+              <button id="sort-latency" class="secondary" type="button" aria-pressed="false" hidden>По задержке</button>
+            </div>
+          </div>
+          <div id="servers" class="servers" role="group" aria-label="Серверы"></div>
+        </section>
+      </div>
+      <button id="switch-server" class="secondary switch-server" hidden>Переключить</button>
 
       <section id="subscription-stats" class="subscription-stats" aria-label="Подписка" hidden>
         <p id="subscription-state"></p>
-        <p id="subscription-usage"></p>
         <p id="subscription-expiry"></p>
+        <p id="subscription-usage"></p>
       </section>
 
-      <section aria-labelledby="servers-heading">
-        <h2 id="servers-heading">Серверы</h2>
-        <div id="server-tools" class="field-row server-tools" hidden>
-          <input id="server-search" type="search" placeholder="Поиск сервера" aria-label="Поиск сервера">
-          <button id="measure-latency" class="secondary" type="button" title="Проверка прямого TCP-подключения к адресу сервера">Задержка TCP</button>
-          <button id="sort-latency" class="secondary" type="button" aria-pressed="false" hidden>По задержке</button>
-        </div>
-        <div id="servers" class="servers">
-          <p class="empty">Нет доступных серверов</p>
-        </div>
-      </section>
+      <details class="connection-info">
+        <summary>Информация о соединении</summary>
+        <dl>
+          <div><dt>Текущий сервер</dt><dd id="info-server">—</dd></div>
+          <div><dt>Протокол</dt><dd id="info-protocol">—</dd></div>
+          <div><dt>Задержка TCP</dt><dd id="info-latency">—</dd></div>
+          <div><dt>Состояние Xray</dt><dd id="info-core">—</dd></div>
+        </dl>
+      </details>
+      <button id="account-title" class="account-trigger" type="button" aria-haspopup="dialog">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="8" r="3"/><path d="M5 20v-2a7 7 0 0 1 14 0v2"/></svg>
+        <span id="account-name"></span>
+        <svg class="account-arrow" viewBox="0 0 24 24" aria-hidden="true"><path d="m9 6 6 6-6 6"/></svg>
+      </button>
+    </div>
+    <p id="message" class="message" role="status"></p>
+  </main>
 
-      <details id="account" class="account">
-        <summary id="account-title">Войти в аккаунт</summary>
+  <dialog id="account" class="panel-dialog" aria-labelledby="account-heading">
+        <div class="dialog-header">
+          <h2 id="account-heading">Аккаунт</h2>
+          <button type="button" class="icon-button" data-close-dialog aria-label="Закрыть">×</button>
+        </div>
         <div id="signed-in">
           <button class="secondary" id="account-refresh">Обновить серверы</button>
           <button class="secondary" id="account-logout">Выйти</button>
@@ -120,11 +151,15 @@
             </form>
           </details>
         </div>
-      </details>
+        <p id="account-message" class="message" role="status"></p>
+  </dialog>
 
+  <dialog id="preferences-dialog" class="panel-dialog" aria-labelledby="preferences-heading">
+    <div class="dialog-header">
+      <h2 id="preferences-heading">Настройки</h2>
+      <button type="button" class="icon-button" data-close-dialog aria-label="Закрыть">×</button>
     </div>
-    <details class="account" id="preferences">
-      <summary>Настройки</summary>
+    <section id="preferences">
       <label for="language">Язык</label>
       <select id="language"><option value="ru">Русский</option><option value="en">English</option></select>
       <label for="appearance">Оформление</label>
@@ -149,7 +184,7 @@
           <textarea id="direct-domains" rows="3" spellcheck="false" placeholder="example.org"></textarea>
           <label for="direct-ips">IP и сети напрямую (по одной на строку)</label>
           <textarea id="direct-ips" rows="3" spellcheck="false" placeholder="192.0.2.0/24"></textarea>
-          <p class="caption">Указывай группы geosite: в списке доменов и geoip: в списке сетей. Набор групп зависит от источника.</p>
+          <p class="caption">Указывай группы geosite: в списке доменов и geoip: в списке сетей. Набор групп зависит от источника. Для российских доменов попробуй geosite:category-ru.</p>
           <label class="checkbox-setting"><input id="vpn-ipv6" type="checkbox"> IPv6 в туннеле</label>
           <p class="caption">Действует в режимах TUN после переподключения. Если выключено, IPv6-трафик идёт по обычным маршрутам системы.</p>
           <label for="vpn-dns">DNS ядра</label>
@@ -201,13 +236,16 @@
         <p class="caption">Мультиплексирование применяется к TCP-профилям без Vision. Изменения вступят в силу при следующем подключении.</p>
       </div>
       <p id="preferences-message" role="status"></p>
-    </details>
-    <dl class="app-versions caption">
-      <div><dt>Версия приложения</dt><dd id="app-version">—</dd></div>
-      <div><dt>Версия ядра Xray</dt><dd id="xray-version">—</dd></div>
-    </dl>
-    <p id="message" class="message" role="status"></p>
-  </main>
+      <details class="account">
+        <summary>О приложении</summary>
+        <dl class="app-versions caption">
+          <div><dt>Версия приложения</dt><dd id="app-version">—</dd></div>
+          <div><dt>Версия ядра Xray</dt><dd id="xray-version">—</dd></div>
+        </dl>
+      </details>
+      <button id="quit-app" type="button" class="secondary" hidden>Выйти из приложения</button>
+    </section>
+  </dialog>
   <dialog id="update-dialog" aria-labelledby="update-title">
     <h2 id="update-title">Доступно обновление</h2>
     <p id="update-version"></p>

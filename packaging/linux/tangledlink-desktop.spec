@@ -2,7 +2,7 @@
 %global __os_install_post %{nil}
 %global _build_id_links none
 Name: tangledlink-desktop
-Version: 0.3.0
+Version: 1.0.0
 Release: 1
 Summary: TangledLink VPN client
 License: LicenseRef-TangledLink

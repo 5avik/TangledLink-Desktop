@@ -5,6 +5,7 @@ import "./preferences";
 import "./geofiles";
 import "./split-apps";
 import { invoke } from "@tauri-apps/api/core";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 
 type Server = { name: string; transport: string };
 type Usage = { used: number | null; limit: number | null; expires_at: number | null };
@@ -21,6 +22,21 @@ const switchServer = document.querySelector<HTMLButtonElement>("#switch-server")
 const quitApp = document.querySelector<HTMLButtonElement>("#quit-app")!;
 const toggle = document.querySelector<HTMLButtonElement>("#toggle")!;
 const message = document.querySelector<HTMLParagraphElement>("#message")!;
+
+const connection = document.querySelector<HTMLElement>(".connection")!;
+const picker = document.querySelector<HTMLElement>("#server-picker")!;
+const serverPanel = document.querySelector<HTMLElement>("#server-panel")!;
+const serverTrigger = document.querySelector<HTMLButtonElement>("#server-trigger")!;
+const selectedServer = document.querySelector("#selected-server")!;
+const selectedProtocol = document.querySelector("#selected-protocol")!;
+const infoServer = document.querySelector("#info-server")!;
+const infoProtocol = document.querySelector("#info-protocol")!;
+const infoLatency = document.querySelector("#info-latency")!;
+const infoCore = document.querySelector("#info-core")!;
+const accountName = document.querySelector("#account-name")!;
+const accountDialog = document.querySelector<HTMLDialogElement>("#account")!;
+const settingsDialog = document.querySelector<HTMLDialogElement>("#preferences-dialog")!;
+const accountMessage = document.querySelector("#account-message")!;
 
 const startup = document.querySelector<HTMLParagraphElement>("#startup")!;
 const signIn = document.querySelector<HTMLElement>("#sign-in")!;
@@ -69,6 +85,7 @@ let recoveryStep: RecoveryStep = "login";
 let needsActivation = false;
 let awaitingAuthCode = false;
 let resendAfter = 0;
+let resendTimer: number | undefined;
 
 let current: Snapshot = { can_quit: false, checking_session: false, servers: [], active: null, selected: 0, warning: null, account: null, account_notice: null, subscribed: null, usage: null };
 
@@ -77,6 +94,8 @@ let sortByLatency = false;
 let pendingServer: number | null = null;
 let busy = false;
 let refreshing = false;
+let connectionAction: "connect" | "disconnect" | "switch" | null = null;
+let connectionError: string | null = null;
 
 const stats = document.querySelector<HTMLElement>("#subscription-stats")!;
 const subscriptionState = document.querySelector<HTMLParagraphElement>("#subscription-state")!;
@@ -102,7 +121,12 @@ function renderSubscriptionStats() {
     traffic = usage.limit === 0 ? t("Трафик без лимита") : t("Лимит трафика ") + formatBytes(usage.limit);
   }
   const expiry = usage?.expires_at ? new Date(usage.expires_at * 1000) : null;
-  subscriptionState.textContent = subscribed === null ? "" : subscribed ? t("Подписка активна") : t("Подписка неактивна");
+  const remaining = expiry ? expiry.getTime() - Date.now() : NaN;
+  const expired = remaining <= 0;
+  const soon = subscribed === true && remaining > 0 && remaining <= 7 * 24 * 60 * 60 * 1000;
+  stats.dataset.tone = expired || subscribed === false ? "expired" : soon ? "soon" : subscribed ? "active" : "unknown";
+  subscriptionState.textContent = expired ? t("Подписка истекла") : soon ? t("Подписка скоро истекает")
+    : subscribed == null ? "" : subscribed ? t("Подписка активна") : t("Подписка неактивна");
   subscriptionUsage.textContent = traffic;
   subscriptionExpiry.textContent = expiry && Number.isFinite(expiry.getTime())
     ? t("Действует до ") + new Intl.DateTimeFormat(locale(), { dateStyle: "medium", timeStyle: "short" }).format(expiry) : "";
@@ -142,7 +166,11 @@ function renderAuth() {
     : recoveryStep === "code" ? t("Сохранить пароль") : t("Продолжить");
   recoverySubmit.disabled = busy;
 
+  window.clearTimeout(resendTimer);
   const wait = Math.max(0, Math.ceil((resendAfter - Date.now()) / 1000));
+  if (wait > 0 && (awaitingAuthCode || recoveryStep === "code") && !document.hidden) {
+    resendTimer = window.setTimeout(renderAuth, 1000);
+  }
   for (const button of [authResend, recoveryResend]) {
     button.disabled = busy || wait > 0;
     button.textContent = wait ? t("Повторить через ") + wait + t(" с") : t("Отправить код ещё раз");
@@ -155,18 +183,34 @@ function renderControls() {
   document.querySelector<HTMLElement>("#linux-vpn-settings")!.hidden = !current.can_quit;
   quitApp.disabled = busy;
   const active = current.active !== null;
-  status.textContent = active ? t("Подключено") : t("VPN отключён");
-  status.classList.toggle("online", active);
-  activeName.textContent = current.servers[current.active ?? current.selected]?.name
-    ?? t("Выбери сервер для подключения");
-  toggle.textContent = active ? t("Отключить") : t("Подключить");
-  toggle.disabled = busy || current.servers.length === 0;
+  const state = connectionAction ? "connecting" : active ? "connected" : connectionError ? "error" : "disconnected";
+  connection.dataset.state = state;
+  const countries = new Intl.DisplayNames(locale(), { type: "region", fallback: "none" });
+  const activeServer = current.active === null ? undefined : current.servers[current.active];
+  const selected = current.servers[pendingServer ?? current.active ?? current.selected];
+  const activeLabel = activeServer ? serverLabel(activeServer, countries) : undefined;
+  const selectedLabel = selected ? serverLabel(selected, countries) : undefined;
+  const statusText = t(connectionAction === "disconnect" ? "Отключение…" : state === "connecting" ? "Подключение…"
+    : state === "connected" ? "Защита активна" : state === "error" ? "Ошибка подключения" : "Не подключено");
+  if (status.textContent !== statusText) status.textContent = statusText;
+  activeName.textContent = state === "error" ? t(connectionError ?? "")
+    : state === "connecting" ? t(connectionAction === "switch" ? "Переключаем сервер…" : "")
+    : state === "connected" ? activeLabel?.name ?? "" : t("Нажми для подключения");
+  toggle.setAttribute("aria-label", t(active ? "Отключить" : "Подключить"));
+  toggle.disabled = busy || (!active && current.servers.length === 0);
   switchServer.hidden = !active || pendingServer === null || pendingServer === current.active;
   switchServer.disabled = busy;
-  toggle.classList.toggle("primary", switchServer.hidden);
-  toggle.classList.toggle("secondary", !switchServer.hidden);
+  selectedServer.textContent = selectedLabel?.name ?? t("Выбери сервер");
+  selectedProtocol.textContent = selectedLabel?.transport ?? "";
+  infoServer.textContent = activeLabel?.name ?? "—";
+  infoProtocol.textContent = activeLabel?.transport || "—";
+  const measured = current.active === null ? null : latency[current.active];
+  infoLatency.textContent = measured == null ? "—" : measured + t(" мс");
+  infoCore.textContent = active ? t("Работает") : "—";
   const signed = current.account !== null;
-  accountTitle.textContent = signed ? t("Аккаунт · ") + current.account : t("Войти в аккаунт");
+  accountName.textContent = current.account ?? "";
+  accountMessage.textContent = message.textContent;
+  if (!signed && accountDialog.open) accountDialog.close();
   const wasHidden = signIn.hidden;
   const checking = !ready || current.checking_session;
   startup.hidden = !checking;
@@ -188,12 +232,31 @@ function renderControls() {
   }
 }
 
+function serverLabel(server: Server, countries: Intl.DisplayNames) {
+  const transport = server.transport === "raw" ? "TCP" : server.transport.toUpperCase();
+  const suffix = server.name.match(/\s+(\S+)\s*$/u);
+  const shortened = suffix?.[1].toUpperCase() === transport ? server.name.slice(0, suffix.index).trimEnd() : "";
+  const name = t(shortened || server.name);
+  const flag = name.match(/^(\p{Regional_Indicator}{2})(?!\p{Regional_Indicator})\s*/u);
+  if (!flag) return { name, transport };
+
+  const region = Array.from(flag[1], letter => String.fromCharCode(letter.codePointAt(0)! - 0x1f1e6 + 65)).join("");
+  const country = countries.of(region);
+  if (!country) return { name, transport };
+
+  const description = name.slice(flag[0].length);
+  return { name: flag[1] + " " + country + (description ? " " + description : ""), transport };
+}
+
 function renderServers() {
   list.replaceChildren();
   const query = search.value.trim().toLocaleLowerCase();
+  const countries = new Intl.DisplayNames(locale(), { type: "region", fallback: "none" });
   const visible = current.servers
-    .map((server, index) => ({ server, index }))
-    .filter(({server}) => (server.name + " " + (server.transport === "raw" ? "tcp" : server.transport)).toLocaleLowerCase().includes(query));
+    .map((server, index) => ({ server, index, label: serverLabel(server, countries) }))
+    .filter(({ server, label }) => [label.name, server.name, label.transport].some(
+      text => text.toLocaleLowerCase().includes(query)
+    ));
   if (sortByLatency) {
     const time = (index: number) => latency[index] ?? Number.MAX_SAFE_INTEGER;
     visible.sort((a, b) => time(a.index) - time(b.index));
@@ -205,7 +268,7 @@ function renderServers() {
     list.append(empty);
     return;
   }
-  visible.forEach(({server, index}) => {
+  visible.forEach(({index, label}) => {
     const row = document.createElement("label");
     row.className = "server";
     const radio = document.createElement("input");
@@ -214,6 +277,7 @@ function renderServers() {
     radio.value = String(index);
     radio.checked = index === current.selected;
     radio.addEventListener("change", () => {
+      setServerPanel(false, true);
       if (current.active !== null) {
         pendingServer = index === current.active ? null : index;
         renderControls();
@@ -223,23 +287,25 @@ function renderServers() {
     });
     const name = document.createElement("span");
     name.className = "server-name";
-    name.textContent = server.name;
+    name.textContent = label.name;
     const transport = document.createElement("span");
     transport.className = "transport";
-    transport.textContent = server.transport === "raw" ? "TCP" : server.transport.toUpperCase();
+    transport.textContent = label.transport || "—";
     row.append(radio, name, transport);
-    if (latency.length > 0) {
-      const delay = document.createElement("span");
-      delay.className = "transport delay";
-      delay.textContent = latency[index] == null ? t("Нет ответа") : latency[index] + t(" мс");
-      row.append(delay);
-    }
+    const delay = document.createElement("span");
+    delay.className = "transport delay";
+    delay.textContent = latency[index] == null ? "—" : latency[index] + t(" мс");
+    if (latency[index] === null) delay.title = t("Нет ответа");
+    row.append(delay);
     list.append(row);
   });
 }
 
+let operationRevision = 0;
+
 async function act(operation: () => Promise<Snapshot>, result: (snapshot: Snapshot) => void, pendingMessage = t("Выполняется…")) {
   if (busy) return;
+  operationRevision++;
   busy = true;
   message.textContent = pendingMessage;
   renderControls();
@@ -253,8 +319,12 @@ async function act(operation: () => Promise<Snapshot>, result: (snapshot: Snapsh
     result(current);
   } catch (error) {
     try { current = await invoke<Snapshot>("status"); } catch { /* The next status poll will retry. */ }
-    message.textContent = t(String(error));
+    const detail = String(error);
+    if (connectionAction && current.active === null) connectionError = detail;
+    message.textContent = connectionError === detail ? "" : t(detail);
+    renderServers();
   } finally {
+    connectionAction = null;
     busy = false;
     renderControls();
   }
@@ -287,13 +357,18 @@ measure.addEventListener("click", () => {
 });
 
 toggle.addEventListener("click", () => {
+  if (busy) return;
   const command = current.active === null ? "connect" : "disconnect";
+  connectionAction = command;
+  connectionError = null;
   pendingServer = null;
   void act(() => invoke(command, { index: current.selected }), () => {});
 });
 
 switchServer.addEventListener("click", () => {
-  if (pendingServer === null || current.active === null) return;
+  if (busy || pendingServer === null || current.active === null) return;
+  connectionAction = "switch";
+  connectionError = null;
   const index = pendingServer;
   pendingServer = null;
   void act(() => invoke("connect", { index }), () => {
@@ -411,30 +486,89 @@ logoutButton.addEventListener("click", () => {
 });
 
 async function refresh() {
-  if (busy || refreshing) return;
+  if (document.hidden || busy || refreshing) return;
+  const revision = operationRevision;
   refreshing = true;
   try {
     const snapshot = await invoke<Snapshot>("status");
-    if (busy) return;
+    if (busy || revision !== operationRevision) return;
     ready = true;
     const changed = snapshot.account !== current.account || JSON.stringify(snapshot.servers) !== JSON.stringify(current.servers);
     if (current.active !== snapshot.active) pendingServer = null;
     if (current.active !== null && snapshot.active === null) {
-      message.textContent = t("Туннель остановился");
+      connectionError = snapshot.warning ?? "Туннель остановился";
     }
     if (current.warning && !snapshot.warning && message.textContent === t(current.warning)) {
       message.textContent = "";
     }
+    if (snapshot.active !== null || snapshot.account !== current.account) connectionError = null;
     current = snapshot;
     if (changed) { clearLatency(); renderServers(); }
     if (snapshot.warning) message.textContent = t(snapshot.warning);
     renderControls();
   } catch (error) {
-    if (!busy && ready) message.textContent = t(String(error));
+    if (!busy && revision === operationRevision && ready) message.textContent = t(String(error));
   } finally {
     refreshing = false;
   }
 }
+
+function setServerPanel(open: boolean, restoreFocus = false) {
+  serverPanel.hidden = !open;
+  serverTrigger.setAttribute("aria-expanded", String(open));
+  if (open) {
+    if (!serverTools.hidden) search.focus();
+    else serverTrigger.focus();
+  } else if (restoreFocus) {
+    serverTrigger.focus();
+  }
+}
+
+serverTrigger.addEventListener("click", () => setServerPanel(serverPanel.hidden));
+document.addEventListener("pointerdown", event => {
+  if (!serverPanel.hidden && event.target instanceof Node && !picker.contains(event.target)) setServerPanel(false);
+});
+picker.addEventListener("focusout", event => {
+  if (event.relatedTarget instanceof Node && !picker.contains(event.relatedTarget)) setServerPanel(false);
+});
+picker.addEventListener("keydown", event => {
+  if (event.key === "Escape" && !serverPanel.hidden) {
+    event.preventDefault();
+    setServerPanel(false, true);
+  } else if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+    if (!(event.target === search || event.target === serverTrigger || event.target instanceof HTMLInputElement)) return;
+    event.preventDefault();
+    if (serverPanel.hidden) setServerPanel(true);
+    const radios = Array.from(list.querySelectorAll<HTMLInputElement>("input:not(:disabled)"));
+    if (!radios.length) return;
+    const index = radios.indexOf(document.activeElement as HTMLInputElement);
+    const next = event.key === "ArrowDown" ? index + 1 : index < 0 ? radios.length - 1 : index - 1;
+    radios[(next + radios.length) % radios.length].focus();
+  } else if (event.key === "Enter" && event.target instanceof HTMLInputElement && event.target.type === "radio") {
+    event.preventDefault();
+    event.target.click();
+  }
+});
+
+document.querySelector("#open-settings")!.addEventListener("click", () => settingsDialog.showModal());
+accountTitle.addEventListener("click", () => accountDialog.showModal());
+for (const button of document.querySelectorAll("[data-close-dialog]")) {
+  button.addEventListener("click", () => button.closest("dialog")?.close());
+}
+document.querySelector("#minimize-app")!.addEventListener("click", () => {
+  void Promise.resolve().then(() => getCurrentWindow().minimize()).catch(error => {
+    message.textContent = t(String(error));
+  });
+});
+document.addEventListener("visibilitychange", () => {
+  document.documentElement.toggleAttribute("data-inactive", document.hidden || !document.hasFocus());
+  if (!document.hidden) {
+    renderAuth();
+    void refresh();
+  }
+});
+window.addEventListener("blur", () => document.documentElement.setAttribute("data-inactive", ""));
+window.addEventListener("focus", () => document.documentElement.removeAttribute("data-inactive"));
 
 quitApp.addEventListener("click", () => { void invoke("quit"); });
 
@@ -457,9 +591,6 @@ void invoke<typeof versions>("app_versions").then(result => {
 
 void refresh();
 window.setInterval(() => { void refresh(); }, 1500);
-window.setInterval(() => {
-  if (awaitingAuthCode || recoveryStep === "code") renderAuth();
-}, 1000);
 
 document.addEventListener("language-changed", () => {
   renderVersions();

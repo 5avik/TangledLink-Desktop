@@ -57,7 +57,7 @@ fn nft(script: &str) -> io::Result<()> {
 }
 
 impl Policy {
-    pub fn install(uid: u32, ipv6: bool) -> io::Result<Self> {
+    pub fn install(uid: u32, ipv6: bool, local_direct: bool) -> io::Result<Self> {
         let path = split_cgroup(uid);
         if !std::path::Path::new("/sys/fs/cgroup").join(&path).is_dir() {
             return Err(io::Error::other("missing application cgroup"));
@@ -107,11 +107,22 @@ impl Policy {
             policy.rules[i] = true;
         }
         let mut script = String::new();
-        for family in ["ip", "ip6"].into_iter().take(family_count) {
+        for (family, lan) in [
+            ("ip", &tangledlink_desktop::linux::LAN_V4[..]),
+            ("ip6", &tangledlink_desktop::linux::LAN_V6[..]),
+        ]
+        .into_iter()
+        .take(family_count)
+        {
+            let lan_filter = if local_direct {
+                format!("{family} daddr != {{ {} }} ", lan.join(", "))
+            } else {
+                String::new()
+            };
             script.push_str(&format!(
                 "create table {family} {NFT_TABLE}\n\
                  add chain {family} {NFT_TABLE} output {{ type route hook output priority mangle; policy accept; }}\n\
-                 add rule {family} {NFT_TABLE} output oifname != \"lo\" meta l4proto {{ tcp, udp }} socket cgroupv2 level 4 \"{path}\" meta mark set meta mark or {MARK}\n"
+                 add rule {family} {NFT_TABLE} output {lan_filter}oifname != \"lo\" meta l4proto {{ tcp, udp }} socket cgroupv2 level 4 \"{path}\" meta mark set meta mark or {MARK}\n"
             ));
         }
         nft(&script)?;

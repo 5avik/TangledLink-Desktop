@@ -107,9 +107,9 @@ mod helper {
         (&mut input)
             .take(65537)
             .read_line(&mut line)
-            .map_err(|_| "failed")?;
+            .map_err(|_| "profile")?;
         if line.len() > 65536 || !line.ends_with('\n') {
-            return Err("failed");
+            return Err("profile");
         }
         let assets = if custom_geo {
             // Receive only fixed-name data files. Never open a caller-supplied path as root.
@@ -117,17 +117,23 @@ mod helper {
         } else {
             None
         };
-        let mut outbound = reality_outbound(&line).map_err(|_| "failed")?;
+        let asset_path = assets
+            .as_ref()
+            .map_or(Path::new(geo::PACKAGED), geo::Assets::path);
+        if !linux::check_geo_rules(&options, asset_path) {
+            return Err("geo-rules");
+        }
+        let mut outbound = reality_outbound(&line).map_err(|_| "profile")?;
         let node = &mut outbound["settings"]["vnext"][0];
-        let address = node["address"].as_str().ok_or("failed")?;
+        let address = node["address"].as_str().ok_or("profile")?;
         if address.parse::<IpAddr>().is_err() {
             let port = node["port"]
                 .as_u64()
                 .and_then(|port| u16::try_from(port).ok())
-                .ok_or("failed")?;
-            let mut choices = (address, port).to_socket_addrs().map_err(|_| "failed")?;
+                .ok_or("profile")?;
+            let mut choices = (address, port).to_socket_addrs().map_err(|_| "resolve")?;
             // Prefer an IPv4 endpoint while preserving IPv6-only profiles.
-            let first = choices.next().ok_or("failed")?;
+            let first = choices.next().ok_or("resolve")?;
             let endpoint = if first.is_ipv4() {
                 first
             } else {
@@ -138,8 +144,8 @@ mod helper {
         let endpoint = node["address"]
             .as_str()
             .and_then(|address| address.parse().ok())
-            .ok_or("failed")?;
-        let mut routes = linux::routes(endpoint);
+            .ok_or("profile")?;
+        let mut routes = linux::tun_routes(endpoint, local_direct);
         if !options.ipv6 {
             routes.retain(|route| !route.contains(':'));
         }
@@ -159,12 +165,7 @@ mod helper {
             .args(["run", "-c", "stdin:", "-format", "json"])
             .env_clear()
             .env("PATH", "/usr/sbin:/usr/bin:/sbin:/bin")
-            .env(
-                "XRAY_LOCATION_ASSET",
-                assets
-                    .as_ref()
-                    .map_or(Path::new(geo::PACKAGED), geo::Assets::path),
-            )
+            .env("XRAY_LOCATION_ASSET", asset_path)
             .stdin(Stdio::piped())
             .stdout(Stdio::null())
             .stderr(Stdio::null());
@@ -181,20 +182,23 @@ mod helper {
                 Ok(())
             });
         }
-        let mut child = Core(command.spawn().map_err(|_| "failed")?);
+        let mut child = Core(command.spawn().map_err(|_| "core")?);
         let payload =
             linux::config(outbound, &routes, mtu, local_direct, mux, &options).to_string();
         child
             .0
             .stdin
             .take()
-            .ok_or("failed")?
+            .ok_or("core")?
             .write_all(payload.as_bytes())
-            .map_err(|_| "failed")?;
+            .map_err(|_| "core")?;
         let deadline = Instant::now() + Duration::from_secs(6);
         loop {
-            if child.0.try_wait().map_err(|_| "failed")?.is_some() || Instant::now() >= deadline {
-                return Err("failed");
+            if child.0.try_wait().map_err(|_| "core")?.is_some() {
+                return Err("core");
+            }
+            if Instant::now() >= deadline {
+                return Err("routes");
             }
             if unsafe { libc::if_nametoindex(c"tangledlink0".as_ptr()) } != 0
                 && std::net::UdpSocket::bind(("172.30.254.1", 0)).is_ok()
@@ -212,7 +216,10 @@ mod helper {
                 .and_then(|uid| uid.parse::<u32>().ok())
                 .filter(|uid| *uid != 0)
                 .ok_or("split")?;
-            Some(crate::split::Policy::install(uid, options.ipv6).map_err(|_| "split")?)
+            Some(
+                crate::split::Policy::install(uid, options.ipv6, local_direct)
+                    .map_err(|_| "split")?,
+            )
         } else {
             None
         };

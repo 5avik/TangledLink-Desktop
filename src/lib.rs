@@ -1,3 +1,5 @@
+mod tun_routes;
+
 use percent_encoding::percent_decode_str;
 use serde_json::{Value, json};
 use std::collections::HashMap;
@@ -156,7 +158,7 @@ pub fn windows_tun_config(outbound: Value) -> Value {
                 "mtu": 1500,
                 "gateway": ["172.30.254.1/30", "fd79:746e:676c::1/64"],
                 "dns": ["1.1.1.1", "8.8.8.8"],
-                "autoSystemRoutingTable": ["0.0.0.0/0", "::/0"],
+                "autoSystemRoutingTable": tun_routes::tun_routes(None, true),
                 "autoOutboundsInterface": "auto",
                 "autoSystemWfpBlockLeak": ["dns", "misconfigtun"]
             }

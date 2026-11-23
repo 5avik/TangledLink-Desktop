@@ -34,12 +34,22 @@ struct Client {
     routing: (bool, bool),
     #[cfg(target_os = "linux")]
     core_options: tangledlink_desktop::linux::Options,
+    #[cfg(target_os = "linux")]
+    active_linux_settings: Option<LinuxSettings>,
     account: Option<Account>,
     tray_warning: Option<String>,
     warning: Option<String>,
     #[cfg(any(windows, target_os = "linux"))]
     tunnel: Option<Tunnel>,
     active: Option<usize>,
+}
+
+#[cfg(target_os = "linux")]
+#[derive(Clone)]
+struct LinuxSettings {
+    mtu: u16,
+    routing: (bool, bool),
+    options: tangledlink_desktop::linux::Options,
 }
 
 struct Account {
@@ -131,6 +141,10 @@ impl Client {
 
     fn disconnect(&mut self) -> Result<(), String> {
         self.active = None;
+        #[cfg(target_os = "linux")]
+        {
+            self.active_linux_settings = None;
+        }
         #[cfg(any(windows, target_os = "linux"))]
         if let Some(mut tunnel) = self.tunnel.take() {
             tunnel.stop()?;
@@ -259,30 +273,42 @@ fn connect_client(client: &mut Client, index: usize) -> Result<Snapshot, String>
             move |profile: Profile| Tunnel::start(&core, profile.outbound)
         };
         #[cfg(target_os = "linux")]
-        let start = {
-            if !client.core_options.proxy_only
+        let (target, previous, start, settings, previous_settings) = {
+            let settings = LinuxSettings {
+                mtu: client.mtu.unwrap_or(1500),
+                routing: client.routing,
+                options: client.core_options.clone(),
+            };
+            if !settings.options.proxy_only
                 && !std::path::Path::new(tangledlink_desktop::linux::HELPER).is_file()
             {
                 return Err("Установи системный помощник TangledLink из пакета Linux.".into());
             }
-            {
-                let mtu = client.mtu.unwrap_or(1500);
-                let (local, mux) = client.routing;
-                let options = client.core_options.clone();
-                let bundle = client.geo_bundle.clone();
-                move |profile: Profile| {
-                    Tunnel::start(
-                        &profile.source,
-                        mtu,
-                        local,
-                        mux,
-                        &options,
-                        bundle
-                            .as_deref()
-                            .filter(|path| !matches!(path.try_exists(), Ok(false))),
-                    )
-                }
-            }
+            let previous_settings = client.active_linux_settings.clone();
+            let previous = previous
+                .zip(previous_settings.clone())
+                .map(|((index, profile), config)| (index, (profile, config)));
+            let bundle = client.geo_bundle.clone();
+            let start = move |(profile, config): (Profile, LinuxSettings)| {
+                let (local, mux) = config.routing;
+                Tunnel::start(
+                    &profile.source,
+                    config.mtu,
+                    local,
+                    mux,
+                    &config.options,
+                    bundle
+                        .as_deref()
+                        .filter(|path| !matches!(path.try_exists(), Ok(false))),
+                )
+            };
+            (
+                (target, settings.clone()),
+                previous,
+                start,
+                settings,
+                previous_settings,
+            )
         };
         client.disconnect()?;
         match start_or_restore((index, target), previous, start) {
@@ -293,6 +319,14 @@ fn connect_client(client: &mut Client, index: usize) -> Result<Snapshot, String>
             } => {
                 client.tunnel = Some(tunnel);
                 client.active = Some(index);
+                #[cfg(target_os = "linux")]
+                {
+                    client.active_linux_settings = if restored {
+                        previous_settings
+                    } else {
+                        Some(settings)
+                    };
+                }
                 if restored {
                     return Err(
                         "Новый туннель не запустился. Прежнее подключение восстановлено.".into(),
@@ -661,9 +695,14 @@ async fn refresh_account(app: AppHandle) -> Result<Snapshot, String> {
             );
             return client.snapshot();
         };
-        if account.restoring && update.subscribed.is_none() {
-            client.account = None;
-            client.warning = Some("Не удалось подтвердить сохранённую сессию. Войди снова.".into());
+        if update.subscribed.is_none() {
+            if account.restoring {
+                client.account = None;
+                client.warning =
+                    Some("Не удалось подтвердить сохранённую сессию. Войди снова.".into());
+            } else {
+                account.notice = update.notice;
+            }
             return client.snapshot();
         }
         account.restoring = false;
@@ -936,12 +975,15 @@ fn tray_connection(app: &AppHandle, enable: bool) {
 fn show_window(app: &AppHandle) -> tauri::Result<()> {
     if let Some(window) = app.get_webview_window("main") {
         window.show()?;
+        if window.is_minimized().unwrap_or(false) {
+            let _ = window.unminimize();
+        }
         return window.set_focus();
     }
     WebviewWindowBuilder::new(app, "main", WebviewUrl::App("index.html".into()))
         .title("TangledLink")
-        .inner_size(690.0, 690.0)
-        .min_inner_size(530.0, 510.0)
+        .inner_size(400.0, 600.0)
+        .min_inner_size(360.0, 510.0)
         .center()
         .build()?;
     Ok(())
@@ -1196,6 +1238,49 @@ fn main() {
         }
         _ => {}
     });
+}
+
+#[cfg(all(target_os = "linux", test))]
+mod linux_switch_tests {
+    use super::*;
+
+    #[test]
+    fn failed_switch_restores_previous_connection_settings() {
+        let previous = LinuxSettings {
+            mtu: 1400,
+            routing: (true, false),
+            options: tangledlink_desktop::linux::Options {
+                proxy_only: true,
+                ..Default::default()
+            },
+        };
+        let next = LinuxSettings {
+            mtu: 1500,
+            routing: (false, true),
+            options: tangledlink_desktop::linux::Options {
+                ipv6: true,
+                ..Default::default()
+            },
+        };
+        let result = start_or_restore((1, next), Some((0, previous)), |config| {
+            if config.options.ipv6 {
+                Err("configuration failed")
+            } else {
+                Ok(config)
+            }
+        });
+        let SwitchResult::Started {
+            index: 0,
+            tunnel,
+            restored: true,
+        } = result
+        else {
+            panic!("previous tunnel was not restored");
+        };
+        assert_eq!(tunnel.mtu, 1400);
+        assert_eq!(tunnel.routing, (true, false));
+        assert!(tunnel.options.proxy_only);
+    }
 }
 
 #[cfg(all(windows, test))]

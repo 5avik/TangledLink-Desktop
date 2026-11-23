@@ -1,7 +1,7 @@
 use serde_json::{Value, json};
 use std::{
     io::{BufRead, BufReader, Write},
-    net::{IpAddr, Ipv4Addr, Ipv6Addr},
+    net::IpAddr,
     path::Path,
     process::{Child, Command, Stdio},
     sync::mpsc,
@@ -19,34 +19,14 @@ pub fn split_cgroup(uid: u32) -> String {
     format!("user.slice/user-{uid}.slice/user@{uid}.service/{APP_SLICE}")
 }
 
-// Exclude the selected endpoint so replies arrive on the same interface even
-// when the kernel checks the reverse route for packets on the physical link.
+pub use crate::tun_routes::{LAN_V4, LAN_V6};
+
 pub fn routes(endpoint: IpAddr) -> Vec<String> {
-    fn exclude(address: u128, width: u32, format: impl Fn(u128) -> String) -> Vec<String> {
-        (1..=width)
-            .map(|prefix| {
-                let host_bits = width - prefix;
-                let sibling = ((address >> host_bits) ^ 1) << host_bits;
-                format!("{}/{prefix}", format(sibling))
-            })
-            .collect()
-    }
-    match endpoint {
-        IpAddr::V4(address) => {
-            let mut result = exclude(u32::from(address).into(), 32, |ip| {
-                Ipv4Addr::from(ip as u32).to_string()
-            });
-            result.extend(["::/1".to_owned(), "8000::/1".to_owned()]);
-            result
-        }
-        IpAddr::V6(address) => {
-            let mut result = vec!["0.0.0.0/1".to_owned(), "128.0.0.0/1".to_owned()];
-            result.extend(exclude(address.into(), 128, |ip| {
-                Ipv6Addr::from(ip).to_string()
-            }));
-            result
-        }
-    }
+    tun_routes(endpoint, false)
+}
+
+pub fn tun_routes(endpoint: IpAddr, local_direct: bool) -> Vec<String> {
+    crate::tun_routes::tun_routes(Some(endpoint), local_direct)
 }
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
@@ -78,6 +58,13 @@ impl Default for Options {
 }
 
 impl Options {
+    fn uses_geofiles(&self) -> bool {
+        self.domains
+            .iter()
+            .any(|domain| domain.starts_with("geosite:"))
+            || self.ips.iter().any(|ip| ip.starts_with("geoip:"))
+    }
+
     pub fn valid(&self) -> bool {
         !(self.proxy_only && self.split_apps)
             && (1..=128).contains(&self.concurrency)
@@ -109,6 +96,45 @@ impl Options {
     }
 }
 
+pub fn check_geo_rules(options: &Options, assets: &Path) -> bool {
+    if !options.uses_geofiles() {
+        return true;
+    }
+    let mut rules = Vec::new();
+    for (key, prefix, entries) in [
+        ("domain", "geosite:", &options.domains),
+        ("ip", "geoip:", &options.ips),
+    ] {
+        let groups: Vec<_> = entries
+            .iter()
+            .filter(|entry| entry.starts_with(prefix))
+            .collect();
+        if !groups.is_empty() {
+            rules.push(json!({(key): groups, "outboundTag": "direct"}));
+        }
+    }
+    let config = json!({
+        "outbounds": [{"tag": "direct", "protocol": "freedom"}],
+        "routing": {"rules": rules},
+    });
+    let Ok(mut child) = Command::new(CORE)
+        .args(["run", "-test", "-c", "stdin:", "-format", "json"])
+        .env_clear()
+        .env("XRAY_LOCATION_ASSET", assets)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+    else {
+        return false;
+    };
+    let wrote = child
+        .stdin
+        .take()
+        .is_some_and(|mut input| input.write_all(config.to_string().as_bytes()).is_ok());
+    child.wait().is_ok_and(|status| status.success()) && wrote
+}
+
 pub fn config(
     mut outbound: Value,
     routes: &[String],
@@ -128,7 +154,7 @@ pub fn config(
     if local_direct {
         rules.push(json!({
             "inboundTag": ["tun"],
-            "ip": ["10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "fc00::/7"],
+            "ip": LAN_V4.into_iter().chain(LAN_V6).collect::<Vec<_>>(),
             "outboundTag": "local-direct"
         }));
     }
@@ -262,6 +288,7 @@ impl Tunnel {
         options: &Options,
         bundle: Option<&Path>,
     ) -> Result<Self, &'static str> {
+        let bundle = bundle.filter(|_| options.uses_geofiles());
         if options.proxy_only {
             return Self::start_proxy(profile, mtu, local_direct, mux, options, bundle);
         }
@@ -342,7 +369,14 @@ impl Tunnel {
             Ok("split\n") => {
                 "Не удалось настроить раздельное туннелирование. Проверь nftables и cgroup v2."
             }
+            Ok("geo-rules\n") => {
+                "В выбранных геофайлах нет одной из групп маршрутизации. Проверь правила geosite: и geoip:."
+            }
             Ok("geo\n") => "Не удалось открыть обновлённые геофайлы",
+            Ok("profile\n") => "Не удалось подготовить профиль VPN-сервера.",
+            Ok("resolve\n") => "Не удалось разрешить адрес VPN-сервера через системный DNS.",
+            Ok("core\n") => "Xray завершился при запуске туннеля.",
+            Ok("routes\n") => "Интерфейс или маршруты TangledLink не появились вовремя.",
             Ok("failed\n") => "Xray не смог настроить туннель Linux.",
             Ok(_) | Err(mpsc::RecvTimeoutError::Disconnected) => {
                 "Запуск отменён, не подтверждён в polkit или превышено время ожидания."
@@ -386,6 +420,14 @@ impl Tunnel {
             })
             .transpose()
             .map_err(|_| "Не удалось открыть обновлённые геофайлы")?;
+        let asset_path = assets
+            .as_ref()
+            .map_or(Path::new(geo::PACKAGED), geo::Assets::path);
+        if !check_geo_rules(options, asset_path) {
+            return Err(
+                "В выбранных геофайлах нет одной из групп маршрутизации. Проверь правила geosite: и geoip:.",
+            );
+        }
         let mut command = Command::new(CORE);
         command
             .args(["run", "-c", "stdin:", "-format", "json"])
@@ -497,6 +539,48 @@ mod tests {
             }
             .valid()
         );
+    }
+
+    #[test]
+    fn bypasses_private_and_link_local_ranges_when_requested() {
+        use std::net::IpAddr;
+        let endpoint = "192.168.1.2".parse().unwrap();
+        let routes = super::tun_routes(endpoint, true);
+        let covered = |destination: &str| {
+            let destination = destination.parse::<IpAddr>().unwrap();
+            routes.iter().any(|route| {
+                let (network, prefix) = route.split_once('/').unwrap();
+                let prefix = prefix.parse::<u32>().unwrap();
+                match (network.parse::<IpAddr>().unwrap(), destination) {
+                    (IpAddr::V4(a), IpAddr::V4(b)) => {
+                        u32::from(a) >> (32 - prefix) == u32::from(b) >> (32 - prefix)
+                    }
+                    (IpAddr::V6(a), IpAddr::V6(b)) => {
+                        u128::from(a) >> (128 - prefix) == u128::from(b) >> (128 - prefix)
+                    }
+                    _ => false,
+                }
+            })
+        };
+        for destination in [
+            "10.1.2.3",
+            "172.31.255.255",
+            "192.168.1.2",
+            "169.254.1.2",
+            "fc00::1",
+            "fe80::1",
+        ] {
+            assert!(!covered(destination), "{destination}");
+        }
+        for destination in [
+            "9.255.255.255",
+            "172.15.255.255",
+            "172.32.0.0",
+            "192.169.0.0",
+            "2606:4700::1",
+        ] {
+            assert!(covered(destination), "{destination}");
+        }
     }
 
     #[test]

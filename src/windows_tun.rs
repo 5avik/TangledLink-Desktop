@@ -190,9 +190,43 @@ mod tests {
             outbound["streamSettings"]["realitySettings"]["spiderX"],
             "/a"
         );
+        let settings = &result["inbounds"][0]["settings"];
+        let routes = settings["autoSystemRoutingTable"].as_array().unwrap();
+        let uses_tun = |destination: &str| {
+            use std::net::IpAddr;
+            let destination = destination.parse::<IpAddr>().unwrap();
+            routes.iter().any(|route| {
+                let (network, prefix) = route.as_str().unwrap().split_once('/').unwrap();
+                let prefix = prefix.parse::<u32>().unwrap();
+                match (network.parse::<IpAddr>().unwrap(), destination) {
+                    (IpAddr::V4(a), IpAddr::V4(b)) => {
+                        prefix == 0
+                            || u32::from(a) >> (32 - prefix) == u32::from(b) >> (32 - prefix)
+                    }
+                    (IpAddr::V6(a), IpAddr::V6(b)) => {
+                        prefix == 0
+                            || u128::from(a) >> (128 - prefix) == u128::from(b) >> (128 - prefix)
+                    }
+                    _ => false,
+                }
+            })
+        };
+        for destination in [
+            "10.1.2.3",
+            "172.31.255.255",
+            "192.168.1.1",
+            "169.254.2.1",
+            "fd00::1",
+            "fe80::1",
+        ] {
+            assert!(!uses_tun(destination), "{destination}");
+        }
+        for destination in ["1.1.1.1", "8.8.8.8", "2606:4700::1"] {
+            assert!(uses_tun(destination), "{destination}");
+        }
         assert_eq!(
-            result["inbounds"][0]["settings"]["autoSystemRoutingTable"],
-            serde_json::json!(["0.0.0.0/0", "::/0"])
+            settings["autoSystemWfpBlockLeak"],
+            serde_json::json!(["dns", "misconfigtun"])
         );
     }
 
