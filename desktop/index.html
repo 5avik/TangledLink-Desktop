@@ -138,8 +138,10 @@
           <button type="button" class="icon-button" data-close-dialog aria-label="Закрыть">×</button>
         </div>
         <div id="signed-in">
-          <button class="secondary" id="account-refresh">Обновить серверы</button>
-          <button class="secondary" id="account-logout">Выйти</button>
+          <div class="account-subscription-actions">
+            <button type="button" class="secondary" id="account-refresh">Обновить серверы</button>
+            <button type="button" class="secondary" data-open-billing>Продлить подписку</button>
+          </div>
           <p class="caption" id="account-notice"></p>
           <details class="account">
             <summary>Управление аккаунтом · сменить пароль</summary>
@@ -154,8 +156,8 @@
               <p role="status"></p>
             </form>
           </details>
+          <button type="button" class="secondary" id="account-logout">Выйти</button>
         </div>
-        <button type="button" class="secondary" data-open-billing>Продлить подписку</button>
         <p id="account-message" class="message" role="status"></p>
   </dialog>
 

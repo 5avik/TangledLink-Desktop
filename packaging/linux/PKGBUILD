@@ -1,5 +1,5 @@
 pkgname=tangledlink-desktop
-pkgver=1.0.2
+pkgver=1.1.0
 pkgrel=1
 pkgdesc='TangledLink VPN client'
 arch=('x86_64')
